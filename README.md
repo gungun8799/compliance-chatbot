@@ -7,7 +7,7 @@ This repository contains a Retrieval-Augmented Generation (RAG) FAQ chatbot usin
 - 🧠 **Chat Memory**: Stores past interactions for continuity.
 - 💾 **Data Persistence**: Ensures long-term storage of chatbot data.
 - 👍 **Human Feedback**: Allows users to provide feedback on chatbot responses.
-- 🤔 **Thinking Step (Same as Deepseek-R1)**: Implements structured reasoning for responses.
+- 🤔 **Thinking Step (Same as Deepseek-R1 and O1)**: Implements structured reasoning for responses.
 - 🔐 **Authentication**: Secure user authentication for access control.
 
 ## 🔧 Technologies Used
