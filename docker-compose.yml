@@ -1,0 +1,165 @@
+# Build "ai" network first: docker network create --driver bridge ai
+# For deploy: docker compose -p faq_chatbot up --build -d
+# Build Specific Service: docker compose -p faq_chatbot up --build -d postgres prisma localstack ai-chatbot
+
+services:
+  phoenix:
+    image: arizephoenix/phoenix:version-5.11.0
+    container_name: phoenix
+    restart: unless-stopped
+    ports:
+      - 3000:3000  # PHOENIX_PORT
+      - 4317:4317  # PHOENIX_GRPC_PORT
+    environment:
+      PHOENIX_WORKING_DIR: /mnt/data
+      PHOENIX_PORT: 3000
+      COLLECTOR_ENDPOINT: ${TRACE_ENDPOINT:-http://phoenix:3000/v1/traces}
+      INSTRUMENT_LLAMA_INDEX: true
+    volumes:
+      - ${PHOENIX_DATAPATH}
+    networks:
+      - ai
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis/redis-stack:7.4.0-v1
+    container_name: redis
+    restart: unless-stopped
+    ports:
+      - 6379:6379
+      - 8001:8001
+    environment:
+      REDIS_ARGS: --requirepass ${REDIS_CHATSTORE_PASSWORD:-default_password}
+    networks:
+      - ai
+    volumes:
+      - ${REDIS_DATAPATH}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    container_name: qdrant
+    restart: unless-stopped
+    ports:
+      - 6333:6333  # REST API
+      - 6334:6334  # gRPC API
+    environment:
+      QDRANT__SERVICE__API_KEY: $QDRANT_API_KEY
+    volumes:
+      - ${QDRANT_DATAPATH}
+    networks:
+      - ai
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  postgres:
+    image: postgres:16
+    container_name: postgresql
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_USER: ${POSTGRES_USERNAME:-root}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-root}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ${POSTGRES_DATAPATH}
+    networks:
+      - ai
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  prisma:
+    image: node:18
+    container_name: prisma
+    working_dir: /app
+    entrypoint: ["sh", "-c", "/app/prisma/start-prisma.sh"]
+    volumes:
+      - ./prisma:/app/prisma  # Mount Prisma directory
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+    networks:
+      - ai
+    depends_on:
+      - postgres
+    ports:
+      - 5555:5555 # Port for Prisma Studio
+
+  localstack:
+    image: localstack/localstack:latest
+    container_name: localstack
+    restart: unless-stopped
+    environment:
+      SERVICES: s3
+    ports:
+      - 4566:4566
+    volumes:
+      - ./localstack/localstack-script.sh:/etc/localstack/init/ready.d/script.sh
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - ${LOCALSTACK_DATAPATH}
+
+  chainlit_app:
+    build: ./chainlit_app/
+    image: chainlit_app:v1.0
+    container_name: chainlit_app_v1
+    restart: unless-stopped
+    environment:
+      CHAINLIT_AUTH_SECRET: ${CHAINLIT_AUTH_SECRET}
+      GRPC_VERBOSITY: ${GRPC_VERBOSITY}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      GROQ_MODEL_ID_1: ${GROQ_MODEL_ID_1}
+      GROQ_MODEL_ID_2: ${GROQ_MODEL_ID_2}
+      COHEAR_API_KEY: ${COHEAR_API_KEY}
+      COHEAR_MODEL_ID: ${COHEAR_MODEL_ID}
+      REDIS_CHATSTORE_URI: ${REDIS_CHATSTORE_URI}
+      REDIS_CHATSTORE_PASSWORD: ${REDIS_CHATSTORE_PASSWORD}
+      TRACE_ENDPOINT: ${TRACE_ENDPOINT}
+      TRACE_PROJECT_NAME: ${TRACE_PROJECT_NAME}
+      DATABASE_URL: ${DATABASE_URL}
+      QDRANT_URL: ${QDRANT_URL}
+      QDRANT_API_KEY: ${QDRANT_API_KEY}
+      COLLECTION_NAME: ${QDANT_COLLENCTION_NAME}
+    ports:
+      - 8000:8000
+    networks:
+      - ai
+    depends_on:
+      - phoenix
+      - redis
+      - qdrant
+      - postgres
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  phoenix_data:
+    driver: local
+  qdrant_storage:
+    driver: local
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  localstack:
+    driver: local
+
+
+networks:
+  ai:
+    external: true
