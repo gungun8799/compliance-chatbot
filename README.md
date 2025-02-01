@@ -10,6 +10,12 @@ This repository contains a Retrieval-Augmented Generation (RAG) FAQ chatbot usin
 - **Thinking Step (Same as Deepseek-R1)**: Implements structured reasoning for responses.
 - **Authentication**: Secure user authentication for access control.
 
+## 📸 Thinking Process Screenshot
+
+Below is a screenshot demonstrating the chatbot's reasoning process:
+
+![Thinking Process](screenshots/thinking-page.png)
+
 ## 🚀 Deployment Instructions
 
 ### 1. Create AI Network
