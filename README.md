@@ -1,14 +1,21 @@
-# RAG FAQ Chatbot (Production-Ready)
+# RAG FAQ Chatbot (Production-Ready) 🚀
 
 This repository contains a Retrieval-Augmented Generation (RAG) FAQ chatbot using Qdrant for vector search and Chainlit for the frontend.
 
-## Features
-- **Chat Profile**: Personalized user interactions.
-- **Chat Memory**: Stores past interactions for continuity.
-- **Data Persistence**: Ensures long-term storage of chatbot data.
-- **Human Feedback**: Allows users to provide feedback on chatbot responses.
-- **Thinking Step (Same as Deepseek-R1)**: Implements structured reasoning for responses.
-- **Authentication**: Secure user authentication for access control.
+## 🌟 Features
+- 🗂 **Chat Profile**: Personalized user interactions.
+- 🧠 **Chat Memory**: Stores past interactions for continuity.
+- 💾 **Data Persistence**: Ensures long-term storage of chatbot data.
+- 👍 **Human Feedback**: Allows users to provide feedback on chatbot responses.
+- 🤔 **Thinking Step (Same as Deepseek-R1)**: Implements structured reasoning for responses.
+- 🔐 **Authentication**: Secure user authentication for access control.
+
+## 🔧 Technologies Used
+
+- **Groq**: Utilized for running Large Language Models (LLMs) with high efficiency and speed.
+- **Cohere**: Employed for generating text embedding services.
+- **LlamaIndex**: Serves as the AI workflow backend.
+- **Chainlit**: Provides the frontend framework for the chatbot.
 
 ## 📸 Thinking Process Screenshot
 
