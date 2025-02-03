@@ -1,6 +1,6 @@
 # Build "ai" network first: docker network create --driver bridge ai
 # For deploy: docker compose -p faq_chatbot up --build -d
-# Build Specific Service: docker compose -p faq_chatbot up --build -d postgres prisma localstack ai-chatbot
+# Build Specific Service: docker compose -p faq_chatbot up --build -d postgres prisma localstack chainlit_app
 
 services:
   phoenix:
