@@ -9,9 +9,16 @@ ADD . /app
 
 # Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install chainlit[sqlalchemy]
+RUN pip install psycopg2-binary asyncpg
+
+
+
+
 
 # Make port 8000 available to the world outside this container
 EXPOSE 8000
 
 # Run main.py when the container launches
-CMD ["python", "-m", "chainlit", "run", "app.py", "-h", "--host", "0.0.0.0", "--port", "8000"]
+# Dockerfile
+CMD ["python","-m","chainlit","run","app.py","--host","0.0.0.0","--port","8000"]

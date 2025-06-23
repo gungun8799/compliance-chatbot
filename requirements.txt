@@ -1,6 +1,7 @@
 # llamaindex
 llama-index==0.12.10
 llama-index-core==0.12.10.post1
+llama-index-embeddings-text-embeddings-inference>=0.3.2
 
 # Groq AI
 llama-index-llms-groq==0.3.1

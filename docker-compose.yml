@@ -3,6 +3,8 @@
 # Build Specific Service: docker compose -p faq_chatbot up --build -d postgres prisma localstack chainlit_app
 
 services:
+
+
   phoenix:
     image: arizephoenix/phoenix:version-5.11.0
     container_name: phoenix
@@ -24,6 +26,20 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  feedback_api:
+    build:
+      context: ./feedback_api    # <-- points at that feedback_api folder
+      dockerfile: Dockerfile
+    container_name: feedback_api
+    image: feedback_api:v1
+    restart: unless-stopped
+    ports:
+      - "4001:4001"
+    networks:
+      - ai
+    depends_on:
+      - chainlit_app
 
   redis:
     image: redis/redis-stack:7.4.0-v1
@@ -72,7 +88,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USERNAME:-root}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-root}
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - ${POSTGRES_DATAPATH}
     networks:
@@ -114,6 +130,7 @@ services:
 
   chainlit_app:
     build: ./chainlit_app/
+    env_file: .env
     image: chainlit_app:v1.0
     container_name: chainlit_app_v1
     restart: unless-stopped
@@ -158,6 +175,9 @@ volumes:
     driver: local
   localstack:
     driver: local
+
+
+  
 
 
 networks:
