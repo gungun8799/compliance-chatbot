@@ -1,5 +1,5 @@
 # Env vars.
-.env
+
 .conda
 
 # Where we store PostgreSQL data.
