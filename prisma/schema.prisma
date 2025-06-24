@@ -8,6 +8,8 @@ generator client {
 datasource db {
     provider   = "postgresql"
     url        = env("DATABASE_URL")
+    // Prisma migrations run through the direct URL. Replace as needed.
+    directUrl  = env("DATABASE_URL")
     extensions = [pgcrypto]
 }
 
@@ -102,6 +104,7 @@ model Step {
     @@index([name])
     @@index([threadId, startTime, endTime])
 }
+
 
 model Thread {
     id        String    @id @default(dbgenerated("gen_random_uuid()"))

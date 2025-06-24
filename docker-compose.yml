@@ -91,6 +91,7 @@ services:
       - "5433:5432"
     volumes:
       - ${POSTGRES_DATAPATH}
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - ai
     logging:

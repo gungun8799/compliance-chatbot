@@ -7,9 +7,6 @@ from llama_index.storage.chat_store.redis import RedisChatStore
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.core.llms import ChatMessage
 
-from llama_index.llms.openai_like import OpenAILike
-from llama_index.embeddings.text_embeddings_inference import TextEmbeddingsInference
-
 from llama_index.core.prompts import PromptTemplate
 from llama_index.core.chat_engine import CondenseQuestionChatEngine
 from functions.qdrant_vectordb import QdrantManager
@@ -45,8 +42,6 @@ import httpx
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 from sqlalchemy import Table, Column, String, JSON, MetaData
 from sqlalchemy.ext.asyncio import AsyncEngine
-from patches import patch
-patch.apply_patch()
 
 
 
@@ -91,11 +86,6 @@ logger = logging.getLogger(__name__)
 
 # Load variables from the .env file
 load_dotenv()
-LLM_MODEL_ID    = os.getenv("LLM_MODEL_ID")
-LLM_BASE_URL    = os.getenv("LLM_BASE_URL")
-API_KEY_CHATBOT = os.getenv("API_KEY_CHATBOT")
-EMBED_MODEL_ID  = os.getenv("EMBED_MODEL_ID")
-EMBED_BASE_URL  = os.getenv("EMBED_BASE_URL")
 # Access the variables
 GROQ_MODEL_ID_1 = os.getenv("GROQ_MODEL_ID_1")
 GROQ_MODEL_ID_2 = os.getenv("GROQ_MODEL_ID_2")
@@ -134,6 +124,17 @@ qdrant_manager = QdrantManager()
 
 # Set the desired chunk size and context window
 # Settings.chunk_size = 512
+Settings.context_window = 6000
+
+# Set up embedding model
+Settings.embed_model = CohereEmbedding(
+    api_key=os.getenv("COHEAR_API_KEY"),
+    model_name=os.getenv("COHEAR_MODEL_ID"),
+    input_type="search_document",
+    embedding_type="float",
+)
+
+
 
 
 
@@ -155,12 +156,6 @@ logger = logging.getLogger(__name__)
 
 
 # …and similarly for multi-star emojis if you choose…
-
-
-
-
-
-
 
 
 def get_current_chainlit_thread_id() -> str:
@@ -208,30 +203,14 @@ CHAT_PROFILES = {
         "context_prompt": SYSTEM_PROMPT_STANDARD,
         "welcome_message": "Hi there! Need help with accounting compliance?",
         "llm_settings": {
-            "model": LLM_MODEL_ID,
-            "api_base": LLM_BASE_URL,
-            "api_key": API_KEY_CHATBOT,
+            "model": GROQ_MODEL_ID_1,
+            "api_key": GROQ_API_KEY,
             "is_chat_model": True,
             "is_function_calling_model": False,
-            "temperature": 0.2,
-            "http_client": httpx.Client(verify=False),
+            "temperature": 0.5,
         },
     },
 }
-
-
-def get_llm_settings(chat_profile: str):
-    cfg = CHAT_PROFILES.get(chat_profile, {}).get("llm_settings")
-    if not cfg:
-        raise ValueError(f"No settings for {chat_profile}")
-    return Groq(
-        model=cfg["model"],
-        api_key=cfg["api_key"],
-        is_chat_model=cfg["is_chat_model"],
-        is_function_calling_model=cfg["is_function_calling_model"],
-        temperature=cfg["temperature"],
-    )
-
 
 async def answer_from_node(node, user_q):
     """Builds and sends the final LLM response from a single node."""
@@ -313,28 +292,19 @@ def save_conversation_log(thread_id: str, parent_id: str, role: str, content: st
     print(f"📝 Logged {role} message to {key}")
 
 
+def get_llm_settings(chat_profile: str):
+    """Retrieve and configure LLM settings based on the chat profile."""
+    settings = CHAT_PROFILES.get(chat_profile, {}).get("llm_settings")
+    if not settings:
+        raise ValueError(f"No LLM settings found for profile: {chat_profile}")
 
-
-
-Settings.context_window = 6000
-
-# Set up embedding model
-Settings.embed_model = CohereEmbedding(
-    api_key=os.getenv("COHEAR_API_KEY"),
-    model_name=os.getenv("COHEAR_MODEL_ID"),
-    input_type="search_document",
-    embedding_type="float",
-)
-
-
-# Set up embedding model
-Settings.embed_model = TextEmbeddingsInference(
-    model_name=EMBED_MODEL_ID,
-    base_url=EMBED_BASE_URL,
-    auth_token=f"Bearer {API_KEY_CHATBOT}",
-    timeout=60,
-    embed_batch_size=10,
-)
+    return Groq(
+        model=settings["model"],
+        api_key=settings["api_key"],
+        is_chat_model=settings["is_chat_model"],
+        is_function_calling_model=settings["is_function_calling_model"],
+        temperature=settings["temperature"],
+    )
 
 def start_clarification(thread_id: str, topics: list[str]):
     """
@@ -928,7 +898,7 @@ async def on_message(message: cl.Message):
             return await answer_from_node(chosen, original_query)
 
         selected_index = None
-        SIMILARITY_TIE_THRESHOLD   = 0.05
+        SIMILARITY_TIE_THRESHOLD   = 0.03
         # 1) Numeric choice?
         # 1) Numeric choice or opt-out by index
         opt_out_choice = "❌ ถามคำถามใหม่"
@@ -1056,7 +1026,7 @@ async def on_message(message: cl.Message):
     # … (rest of your clarification logic) …
 
         # 7) Check if any other node is still “tied” in score
-        SIMILARITY_TIE_THRESHOLD = 0.05
+        SIMILARITY_TIE_THRESHOLD = 0.03
         chosen_score = chosen_node.score
         tied_nodes = []
         for lbl, (node_obj, _, _) in summary_to_meta.items():
@@ -1217,7 +1187,7 @@ async def on_message(message: cl.Message):
     # === Ambiguity (Too‐broad) Check ===
     # === SIMILARITY_TIE_THRESHOLD = 0.03
     # === MAX_TOPICS_BEFORE_CLARIFY = 3
-    SIMILARITY_TIE_THRESHOLD   = 0.05
+    SIMILARITY_TIE_THRESHOLD   = 0.03
     scores = [n.score for n in nodes[:MAX_TOPICS_BEFORE_CLARIFY]]
     if (
         len(scores) >= 2
