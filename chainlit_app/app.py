@@ -6,7 +6,7 @@ from llama_index.llms.groq import Groq
 from llama_index.storage.chat_store.redis import RedisChatStore
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.core.llms import ChatMessage
-
+from llama_index.embeddings.text_embeddings_inference import TextEmbeddingsInference
 from llama_index.core.prompts import PromptTemplate
 from llama_index.core.chat_engine import CondenseQuestionChatEngine
 from functions.qdrant_vectordb import QdrantManager
@@ -38,12 +38,17 @@ import chainlit as cl
 
 from chainlit import Action
 from fastapi import Request
-import httpx
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 from sqlalchemy import Table, Column, String, JSON, MetaData
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+# By pass SSL certification
+import httpx
 
+# Apply the monkey patch
+from patches import patch
+
+patch.apply_patch()
 
 
 # metadata for our extra table
@@ -54,10 +59,10 @@ clarification_state = Table(
     extra_meta,
     Column("thread_id", String, primary_key=True),
     Column("summaries", JSON, nullable=False),
-    Column("nodes", JSON, nullable=False),  # you'll serialize node.score, node.text, node.metadata
+    Column(
+        "nodes", JSON, nullable=False
+    ),  # you'll serialize node.score, node.text, node.metadata
 )
-
-
 
 
 MAX_CLARIFICATION_ROUNDS = 2
@@ -68,7 +73,7 @@ redis_client = redis.Redis(
     host=parsed.hostname,
     port=parsed.port or 6379,
     password=os.getenv("REDIS_CHATSTORE_PASSWORD"),
-    db=0
+    db=0,
 )
 warnings.filterwarnings("ignore")
 
@@ -90,9 +95,14 @@ load_dotenv()
 GROQ_MODEL_ID_1 = os.getenv("GROQ_MODEL_ID_1")
 GROQ_MODEL_ID_2 = os.getenv("GROQ_MODEL_ID_2")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL")
+LLM_MODEL_ID = os.getenv("LLM_MODEL_ID")
+API_KEY_CHATBOT = os.getenv("API_KEY_CHATBOT")
+EMBED_BASE_URL = os.getenv("EMBED_BASE_URL")
+EMBED_MODEL_ID = os.getenv("EMBED_MODEL_ID")
 
 # Collection Name (Vector database)
-QDANT_COLLENCTION_NAME = os.getenv("QDANT_COLLENCTION_NAME")
+QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME")
 
 # Chat-Memory
 REDIS_CHATSTORE_URI = os.getenv("REDIS_CHATSTORE_URI")
@@ -124,28 +134,32 @@ qdrant_manager = QdrantManager()
 
 # Set the desired chunk size and context window
 # Settings.chunk_size = 512
-Settings.context_window = 6000
+Settings.context_window = 12000
 
 # Set up embedding model
-Settings.embed_model = CohereEmbedding(
-    api_key=os.getenv("COHEAR_API_KEY"),
-    model_name=os.getenv("COHEAR_MODEL_ID"),
-    input_type="search_document",
-    embedding_type="float",
+# Settings.embed_model = CohereEmbedding(
+#     api_key=os.getenv("COHERE_API_KEY"),
+#     model_name=os.getenv("COHERE_MODEL_ID"),
+#     input_type="search_document",
+#     embedding_type="float",
+# )
+
+# Set up embedding model using TextEmbeddingsInference
+Settings.embed_model = TextEmbeddingsInference(
+    model_name=EMBED_MODEL_ID,
+    base_url=EMBED_BASE_URL,
+    auth_token=f"Bearer {API_KEY_CHATBOT}",
+    timeout=60,
+    embed_batch_size=10,
 )
 
-
-
-
-
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
+
 
 @cl.data_layer
 def get_data_layer():
     # Use the ASYNC_DATABASE_URL, pointing to the asyncpg driver
     return SQLAlchemyDataLayer(conninfo=os.environ["ASYNC_DATABASE_URL"])
-
-
 
 
 # 1) Generic recorder for any reaction-like action
@@ -161,33 +175,34 @@ logger = logging.getLogger(__name__)
 def get_current_chainlit_thread_id() -> str:
     return cl.context.session.thread_id
 
+
 # Constants and configurations
 DATASET_MAPPING = {
-    "Standard": QDANT_COLLENCTION_NAME,
-    "Deepthink": QDANT_COLLENCTION_NAME,
-    "Accounting Compliance": QDANT_COLLENCTION_NAME,
+    "Standard": QDRANT_COLLECTION_NAME,
+    "Deepthink": QDRANT_COLLECTION_NAME,
+    "Accounting Compliance": QDRANT_COLLECTION_NAME,
 }
 
 CHAT_ENGINE_PARAMS = {
-    'chat_mode': "context",
-    'similarity_top_k': 5,
-    'sparse_top_k': 12,
-    'alpha': 0.5,
-    'vector_store_query_mode': 'hybrid'
+    "chat_mode": "context",
+    "similarity_top_k": 5,
+    "sparse_top_k": 12,
+    "alpha": 0.5,
+    "vector_store_query_mode": "hybrid",
 }
 
 CHAT_PROFILES = {
-    "Standard": {
-        "context_prompt": SYSTEM_PROMPT_STANDARD,
-        "welcome_message": "Hello {firstname}, how can i help you today?",
-        "llm_settings": {
-            "model": GROQ_MODEL_ID_1,
-            "api_key": GROQ_API_KEY,
-            "is_chat_model": True,
-            "is_function_calling_model": False,
-            "temperature": 0.7,
-        },
-    },
+    # "Standard": {
+    #     "context_prompt": SYSTEM_PROMPT_STANDARD,
+    #     "welcome_message": "Hello {firstname}, how can i help you today?",
+    #     "llm_settings": {
+    #         "model": GROQ_MODEL_ID_1,
+    #         "api_key": GROQ_API_KEY,
+    #         "is_chat_model": True,
+    #         "is_function_calling_model": False,
+    #         "temperature": 0.7,
+    #     },
+    # },
     "Deepthink": {
         "context_prompt": SYSTEM_PROMPT_DEEPTHINK,
         "welcome_message": "Hello {firstname}, how can i help you today?",
@@ -199,38 +214,45 @@ CHAT_PROFILES = {
             "temperature": 0.7,
         },
     },
-        "Accounting Compliance": {  # ✅ ADD THIS
+    "Accounting Compliance": {  # ✅ ADD THIS
         "context_prompt": SYSTEM_PROMPT_STANDARD,
         "welcome_message": "Hi there! Need help with accounting compliance?",
         "llm_settings": {
-            "model": GROQ_MODEL_ID_1,
-            "api_key": GROQ_API_KEY,
+            "model": LLM_MODEL_ID,
+            "api_base": LLM_BASE_URL,
+            "api_key": API_KEY_CHATBOT,
             "is_chat_model": True,
             "is_function_calling_model": False,
-            "temperature": 0.5,
+            "temperature": 0.7,
+            "http_client": httpx.Client(verify=False),
         },
     },
 }
 
+
 async def answer_from_node(node, user_q):
     """Builds and sends the final LLM response from a single node."""
-    src = node.node.metadata.get("source","Unknown")
-    txt = node.node.text.replace("\n"," ")
+    src = node.node.metadata.get("source", "Unknown")
+    txt = node.node.text.replace("\n", " ")
     prompt = (
-        f"ผู้ใช้ถามว่า: \"{user_q}\"\n"
-        f"บทความที่เลือกมาจากเอกสารนโยบาย \"{src}\" (เต็มข้อความ):\n\"\"\"\n{txt}\n\"\"\"\n\n"
+        f'ผู้ใช้ถามว่า: "{user_q}"\n'
+        f'บทความที่เลือกมาจากเอกสารนโยบาย "{src}" (เต็มข้อความ):\n"""\n{txt}\n"""\n\n'
         "กรุณาตอบโดยอาศัยเนื้อหาในบทความนี้"
     )
     resp = cl.user_session.get("runnable").query(prompt)
     answer = resp.response if hasattr(resp, "response") else "".join(resp.response_gen)
     answer = extract_and_format_table(answer.strip())
     # reset state
-    for k in ["awaiting_clarification","clarification_rounds","possible_summaries","nodes_to_consider","summary_to_meta","original_query"]:
+    for k in [
+        "awaiting_clarification",
+        "clarification_rounds",
+        "possible_summaries",
+        "nodes_to_consider",
+        "summary_to_meta",
+        "original_query",
+    ]:
         cl.user_session.set(k, None)
-    msg = cl.Message(
-        content="",
-        metadata={"difficulty": "Clarified"}
-    )
+    msg = cl.Message(content="", metadata={"difficulty": "Clarified"})
     await msg.send()
 
     stream_text = f"✅ นี่คือสิ่งที่พบจาก “{src}”:\n\n{answer}"
@@ -239,36 +261,45 @@ async def answer_from_node(node, user_q):
         await asyncio.sleep(0.005)  # Optional: adjust speed
 
     await msg.update()
-    save_conversation_log(cl.context.session.thread_id, None, "bot", answer, difficulty="Clarified")
+    save_conversation_log(
+        cl.context.session.thread_id, None, "bot", answer, difficulty="Clarified"
+    )
     return
+
 
 def markdown_table_to_html(md_text: str) -> str:
     """Convert markdown tables to HTML tables, preserving non-table content."""
-    if '|' not in md_text or '---' not in md_text:
+    if "|" not in md_text or "---" not in md_text:
         return md_text  # Not a markdown table
 
-    html = markdown.markdown(md_text, extensions=['markdown.extensions.tables'])
-    soup = BeautifulSoup(html, 'html.parser')
-    table = soup.find('table')
+    html = markdown.markdown(md_text, extensions=["markdown.extensions.tables"])
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.find("table")
 
     if table:
-        table['style'] = (
+        table["style"] = (
             "border-collapse: collapse; width: 100%; font-size: 14px; "
             "margin-top: 10px; border: 1px solid #ccc;"
         )
         for th in table.find_all("th"):
-            th['style'] = "background-color: #f2f2f2; padding: 8px; border: 1px solid #ccc;"
+            th["style"] = (
+                "background-color: #f2f2f2; padding: 8px; border: 1px solid #ccc;"
+            )
         for td in table.find_all("td"):
-            td['style'] = "padding: 8px; border: 1px solid #ccc;"
+            td["style"] = "padding: 8px; border: 1px solid #ccc;"
         return str(table)
 
     return md_text
+
 
 def load_context_prompt(chat_profile: str) -> str:
     """Load the context prompt for the given chat profile."""
     return CHAT_PROFILES.get(chat_profile, {}).get("context_prompt", "")
 
-def save_conversation_log(thread_id: str, parent_id: str, role: str, content: str, difficulty: str = None):
+
+def save_conversation_log(
+    thread_id: str, parent_id: str, role: str, content: str, difficulty: str = None
+):
     key = f"conversation_log:{thread_id}"
     log_entry = {
         "timestamp": time.time(),
@@ -292,23 +323,51 @@ def save_conversation_log(thread_id: str, parent_id: str, role: str, content: st
     print(f"📝 Logged {role} message to {key}")
 
 
+# def get_llm_settings(chat_profile: str):
+#     """Retrieve and configure LLM settings based on the chat profile."""
+#     settings = CHAT_PROFILES.get(chat_profile, {}).get("llm_settings")
+#     if not settings:
+#         raise ValueError(f"No LLM settings found for profile: {chat_profile}")
+
+#     return Groq(
+#         model=settings["model"],
+#         api_key=settings["api_key"],
+#         is_chat_model=settings["is_chat_model"],
+#         is_function_calling_model=settings["is_function_calling_model"],
+#         temperature=settings["temperature"],
+#     )
+
 def get_llm_settings(chat_profile: str):
     """Retrieve and configure LLM settings based on the chat profile."""
     settings = CHAT_PROFILES.get(chat_profile, {}).get("llm_settings")
     if not settings:
         raise ValueError(f"No LLM settings found for profile: {chat_profile}")
 
-    return Groq(
-        model=settings["model"],
-        api_key=settings["api_key"],
-        is_chat_model=settings["is_chat_model"],
-        is_function_calling_model=settings["is_function_calling_model"],
-        temperature=settings["temperature"],
-    )
+    if chat_profile == "Accounting Compliance":
+        return OpenAILike(
+            model=settings["model"],
+            api_base=settings["api_base"],
+            api_key=settings["api_key"],
+            is_chat_model=settings["is_chat_model"],
+            is_function_calling_model=settings["is_function_calling_model"],
+            temperature=settings["temperature"],
+            http_client=settings["http_client"],
+        )
+    elif chat_profile == "Deepthink":
+        return Groq(
+            model=settings["model"],
+            api_key=settings["api_key"],
+            is_chat_model=settings["is_chat_model"],
+            is_function_calling_model=settings["is_function_calling_model"],
+            temperature=settings["temperature"],
+        )
+    else:
+        raise ValueError(f"Unsupported chat profile: {chat_profile}")
+
 
 def start_clarification(thread_id: str, topics: list[str]):
     """
-    Mark in the user_session that we are awaiting a clarification. 
+    Mark in the user_session that we are awaiting a clarification.
     Store the list of `topics` (e.g. doc names or node summaries).
     """
     cl.user_session.set("awaiting_clarification", True)
@@ -318,24 +377,23 @@ def start_clarification(thread_id: str, topics: list[str]):
     # We also want to remember the original question, so we know how to re-query or index.
     cl.user_session.set("original_query", thread_id)
 
+
 def clear_clarification():
     cl.user_session.set("awaiting_clarification", False)
     cl.user_session.set("possible_topics", None)
     cl.user_session.set("original_query", None)
 
 
-
-def send_to_ms_teams_workflow(question: str, user_email: str, thread_id: str, parent_id: str):
+def send_to_ms_teams_workflow(
+    question: str, user_email: str, thread_id: str, parent_id: str
+):
     webhook_url = os.getenv("MS_TEAMS_WORKFLOW_URL")
     formatted_question = f"""{question}
 
 [thread_id:{thread_id}]
 [parent_id:{parent_id}]"""
 
-    payload = {
-        "question": formatted_question,
-        "user": user_email
-    }
+    payload = {"question": formatted_question, "user": user_email}
 
     print("📤 Sending to MS Teams:", payload)
     try:
@@ -348,6 +406,7 @@ def send_to_ms_teams_workflow(question: str, user_email: str, thread_id: str, pa
 
 from llama_index.core.query_engine import RetrieverQueryEngine
 from llama_index.core.chat_engine import CondenseQuestionChatEngine
+
 
 def create_chat_engine(chat_profile: str, memory: ChatMemoryBuffer):
     # Load system prompt and dataset for this profile
@@ -385,6 +444,7 @@ def create_chat_engine(chat_profile: str, memory: ChatMemoryBuffer):
 
     return query_engine, retriever
 
+
 def setup_runnable():
     """Set up the chat engine (runnable) and retriever in the user session."""
     try:
@@ -413,6 +473,7 @@ def setup_runnable():
     except Exception as e:
         logger.exception("Error setting up runnable: %s", e)
 
+
 # Mock test authentication
 @cl.password_auth_callback
 def auth_callback(username: str, password: str):
@@ -424,11 +485,16 @@ def auth_callback(username: str, password: str):
         print("✅ Login success")
         return cl.User(
             identifier="admin",
-            metadata={"role": "ADMIN", "email": "chatbot_admin@gmail.com", "provider": "credentials"}
+            metadata={
+                "role": "ADMIN",
+                "email": "chatbot_admin@gmail.com",
+                "provider": "credentials",
+            },
         )
-    
+
     print("❌ Login failed")
     return None
+
 
 @cl.set_chat_profiles
 async def chat_profile(current_user: cl.User):
@@ -438,11 +504,11 @@ async def chat_profile(current_user: cl.User):
             markdown_description="Got questions about the policy? I'm all ears and ready to help you out—just ask!",
             icon="/public/cp_accountant.png",
         ),
-        cl.ChatProfile(
-            name="Deepthink",
-            markdown_description="Powered by deepseek-r1-distill-llama-70b (Groq) model.",
-            icon="/public/deepseek-color.png",
-        ),
+        # cl.ChatProfile(
+        #     name="Deepthink",
+        #     markdown_description="Powered by deepseek-r1-distill-llama-70b (Groq) model.",
+        #     icon="/public/deepseek-color.png",
+        # ),
     ]
 
 
@@ -454,29 +520,30 @@ async def set_starters():
             label="อำนาจอนุมัติการลงทุน investment project แต่ละประเภท แต่ละมูลค่า",
             message="อำนาจอนุมัติการลงทุน investment project แต่ละประเภท แต่ละมูลค่า",
             icon="/public/search.svg",
-            ),
+        ),
         cl.Starter(
             label="เอกสารที่ต้องใช้สำหรับการเปิด new vendor code มีอะไรบ้าง ?",
             message="เอกสารที่ต้องใช้สำหรับการเปิด new vendor code มีอะไรบ้าง ?",
             icon="/public/search.svg",
-            ),
+        ),
         cl.Starter(
             label="รอบการทำเบิกเงินทดรองจ่าย และการจ่ายเงิน",
             message="รอบการทำเบิกเงินทดรองจ่าย และการจ่ายเงิน",
             icon="/public/search.svg",
-            ),
+        ),
         cl.Starter(
             label="เมื่อไรต้องเปิด PR ผ่านระบบ เมื่อไรสามารถใช้ PO manual (PO กระดาษได้)",
             message="เมื่อไรต้องเปิด PR ผ่านระบบ เมื่อไรสามารถใช้ PO manual (PO กระดาษได้)",
             icon="/public/search.svg",
-            )
-        ]
+        ),
+    ]
 
 
 import uuid
 import asyncio
 from sqlalchemy import MetaData, Table, Column
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, insert as pg_insert
+
 
 @cl.on_chat_start
 async def on_chat_start():
@@ -501,9 +568,7 @@ async def on_chat_start():
 
     async with engine.begin() as conn:
         await conn.execute(
-            pg_insert(threads_table)
-            .values(id=thread_uuid)
-            .on_conflict_do_nothing()
+            pg_insert(threads_table).values(id=thread_uuid).on_conflict_do_nothing()
         )
 
     # 2) Everything else as before…
@@ -524,21 +589,25 @@ async def on_chat_start():
     print(f"🚀 Starting poll_all_admin_replies for thread: {thread_id}")
     asyncio.create_task(poll_all_admin_replies(thread_id))
 
+
 def strip_html(html: str) -> str:
-    return re.sub('<[^<]+?>', '', html).strip()
+    return re.sub("<[^<]+?>", "", html).strip()
+
 
 # Track shown replies and parent messages
 shown_admin_reply_ids = {}  # { redis_key: set(reply_ids) }
-shown_parent_keys = set()   # Keys where parent question has been shown
+shown_parent_keys = set()  # Keys where parent question has been shown
 
 import re
 
+
 def strip_html(html: str) -> str:
-    return re.sub('<[^<]+?>', '', html).strip()
+    return re.sub("<[^<]+?>", "", html).strip()
 
 
 # === Define this at the top of your file or before `on_message()` ===
 import re
+
 
 def extract_and_format_table(text: str) -> str:
     """
@@ -570,14 +639,22 @@ def extract_and_format_table(text: str) -> str:
         widths = [max(len(r[i]) for r in rows) for i in range(max_cols)]
 
         # Build header + separator
-        header = "| " + " | ".join(rows[0][i].ljust(widths[i]) for i in range(max_cols)) + " |"
-        sep    = "|" + "|".join("-" * (widths[i] + 2) for i in range(max_cols)) + "|"
+        header = (
+            "| "
+            + " | ".join(rows[0][i].ljust(widths[i]) for i in range(max_cols))
+            + " |"
+        )
+        sep = "|" + "|".join("-" * (widths[i] + 2) for i in range(max_cols)) + "|"
         output_lines.append(header)
         output_lines.append(sep)
 
         # Build remaining rows
         for row in rows[1:]:
-            line = "| " + " | ".join(row[i].ljust(widths[i]) for i in range(max_cols)) + " |"
+            line = (
+                "| "
+                + " | ".join(row[i].ljust(widths[i]) for i in range(max_cols))
+                + " |"
+            )
             output_lines.append(line)
 
         buffer = []
@@ -597,17 +674,22 @@ def extract_and_format_table(text: str) -> str:
 
     return "\n".join(output_lines)
 
+
 def clean_parent_content(raw_html: str) -> str:
     """Strip HTML tags and remove metadata lines."""
     text = strip_html(raw_html)
     lines = text.splitlines()
     filtered_lines = [
-        line for line in lines
+        line
+        for line in lines
         if not any(tag in line for tag in ["[thread_id:", "[parent_id:", "Email:"])
     ]
     return "\n".join(filtered_lines).strip()
 
+
 shown_admin_replies = {}  # Keeps track of the latest reply ID per parent
+
+
 def auto_format_markdown_table(text: str) -> str:
     lines = text.strip().split("\n")
     table_lines = []
@@ -636,7 +718,11 @@ def auto_format_markdown_table(text: str) -> str:
     col_widths = [max(len(row[i]) for row in rows) for i in range(max_cols)]
 
     def format_row(row):
-        return "| " + " | ".join(cell.ljust(col_widths[i]) for i, cell in enumerate(row)) + " |"
+        return (
+            "| "
+            + " | ".join(cell.ljust(col_widths[i]) for i, cell in enumerate(row))
+            + " |"
+        )
 
     formatted = []
     for i, row in enumerate(rows):
@@ -645,6 +731,7 @@ def auto_format_markdown_table(text: str) -> str:
             formatted.append("|" + "|".join("-" * (w + 2) for w in col_widths) + "|")
 
     return "\n".join(normal_lines + [""] + formatted)
+
 
 async def poll_all_admin_replies(thread_id: str):
     printed_keys = set()  # Tracks if we've printed parent message once
@@ -672,7 +759,7 @@ async def poll_all_admin_replies(thread_id: str):
                 if key_str not in printed_keys:
                     await send_with_feedback(
                         content=f"🧾 Original Question:\n\n{clean_parent_content(parent_content)}",
-                        author="User"
+                        author="User",
                     )
                     printed_keys.add(key_str)
 
@@ -690,7 +777,7 @@ async def poll_all_admin_replies(thread_id: str):
                         await send_with_feedback(
                             content=f"📬 Reply from Admin:\n\n{cleaned}",
                             author="Admin",
-                            parent_id=parent_id
+                            parent_id=parent_id,
                         )
                         shown_admin_replies[f"{key_str}:{r['id']}"] = True
 
@@ -702,7 +789,7 @@ async def poll_all_admin_replies(thread_id: str):
             print(f"❌ Redis polling error: {e}")
 
         await asyncio.sleep(5)
-        
+
 
 # What to do when chat is resumed from chat history
 from sqlalchemy import select
@@ -723,7 +810,8 @@ async def on_chat_resume(thread: ThreadDict):
     )
 
     root_messages = [
-        m for m in thread["steps"]
+        m
+        for m in thread["steps"]
         if m["parentId"] is None and m.get("output", "").strip()
     ]
     for message in root_messages:
@@ -735,29 +823,33 @@ async def on_chat_resume(thread: ThreadDict):
     cl.user_session.set("memory", memory)
 
     # 2) Load any saved clarification state from Postgres
-    dl = get_data_layer()         # your SQLAlchemyDataLayer
-    engine = dl.engine            # AsyncEngine
+    dl = get_data_layer()  # your SQLAlchemyDataLayer
+    engine = dl.engine  # AsyncEngine
     async with AsyncSession(engine) as session:
         result = await session.execute(
-            select(clarification_state)
-            .where(clarification_state.c.thread_id == thread_id)
+            select(clarification_state).where(
+                clarification_state.c.thread_id == thread_id
+            )
         )
         row = result.mappings().first()
 
     if row:
-        data = dict(row) 
+        data = dict(row)
         # flag that we’re awaiting clarification
         cl.user_session.set("awaiting_clarification", True)
         cl.user_session.set("possible_summaries", data["summaries"])
 
         # rebuild minimal node objects
         from types import SimpleNamespace
+
         nodes = []
         for n in data["nodes"]:
-            nodes.append(SimpleNamespace(
-                score=n["score"],
-                node=SimpleNamespace(text=n["text"], metadata=n["meta"])
-            ))
+            nodes.append(
+                SimpleNamespace(
+                    score=n["score"],
+                    node=SimpleNamespace(text=n["text"], metadata=n["meta"]),
+                )
+            )
         cl.user_session.set("nodes_to_consider", nodes)
 
         # if you serialize summary→meta in the same table, restore it here too:
@@ -767,15 +859,13 @@ async def on_chat_resume(thread: ThreadDict):
     setup_runnable()
 
 
-async def send_with_feedback(content: str, author: str = "Customer Service Agent", parent_id: str = None):
+async def send_with_feedback(
+    content: str, author: str = "Customer Service Agent", parent_id: str = None
+):
     """
     Send a chat message without any star-rating actions.
     """
-    msg = cl.Message(
-        content="",
-        author=author,
-        parent_id=parent_id
-    )
+    msg = cl.Message(content="", author=author, parent_id=parent_id)
     await msg.send()
 
     for char in content:
@@ -783,9 +873,12 @@ async def send_with_feedback(content: str, author: str = "Customer Service Agent
         await asyncio.sleep(0.005)  # Optional delay for animation effect
 
     await msg.update()
+
+
 # === LOAD PREDEFINED ANSWERS ===
 with open("predefined_answers.json", "r", encoding="utf-8") as f:
     PREDEFINED_ANSWERS = json.load(f)
+
 
 def fuzzy_match(user_question: str):
     best_match = None
@@ -804,6 +897,8 @@ with open("predefined_answers.json", "r", encoding="utf-8") as f:
 
 # … (above imports and setup) …
 from chainlit import Action
+
+
 async def streaming_message_builder(content: str):
     """Stream a full message with animation, character by character."""
     msg = cl.Message(content="")
@@ -816,6 +911,7 @@ async def streaming_message_builder(content: str):
     await msg.update()
     return msg
 
+
 @cl.on_message
 async def on_message(message: cl.Message):
     response = cl.Message(content="")
@@ -823,16 +919,14 @@ async def on_message(message: cl.Message):
 
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
 
     payload = {
         "model": "llama3-70b-8192",  # or "llama3-8b-8192"
         "messages": [{"role": "user", "content": message.content}],
-        "stream": True
+        "stream": True,
     }
-
-    
 
     runnable = cl.user_session.get("runnable")
     retriever = cl.user_session.get("retriever")
@@ -850,10 +944,12 @@ async def on_message(message: cl.Message):
     awaiting = cl.user_session.get("awaiting_clarification")
     if awaiting:
         nodes_to_consider = cl.user_session.get("nodes_to_consider", [])
-        summaries       = cl.user_session.get("possible_summaries", [])
+        summaries = cl.user_session.get("possible_summaries", [])
         summary_to_meta = cl.user_session.get("summary_to_meta", {})
-        original_query  = cl.user_session.get("original_query", "")
-        logger.info(f"[clarify] Enter round; nodes={len(nodes_to_consider)}, summaries={len(summaries)}")
+        original_query = cl.user_session.get("original_query", "")
+        logger.info(
+            f"[clarify] Enter round; nodes={len(nodes_to_consider)}, summaries={len(summaries)}"
+        )
 
         # ─── track how many times we've asked ───
         rounds = cl.user_session.get("clarification_rounds") or 0
@@ -861,12 +957,19 @@ async def on_message(message: cl.Message):
         if rounds >= MAX_CLARIFICATION_ROUNDS:
             # auto-pick the top node and exit clarification
             chosen = max(nodes_to_consider, key=lambda n: n.score)
-            logger.info(f"[clarify] max rounds reached, auto-selecting node with score {chosen.score:.2f}")
+            logger.info(
+                f"[clarify] max rounds reached, auto-selecting node with score {chosen.score:.2f}"
+            )
 
             # clear any leftover clarification state
-            for k in ["awaiting_clarification","clarification_rounds",
-                      "possible_summaries","nodes_to_consider",
-                      "summary_to_meta","original_query"]:
+            for k in [
+                "awaiting_clarification",
+                "clarification_rounds",
+                "possible_summaries",
+                "nodes_to_consider",
+                "summary_to_meta",
+                "original_query",
+            ]:
                 cl.user_session.set(k, None)
 
             return await answer_from_node(chosen, original_query)
@@ -878,7 +981,14 @@ async def on_message(message: cl.Message):
         logger.info(f"[clarify] User choice: {choice!r}")
         # ✅ Allow user to exit clarification
         if choice.strip() in ["❌", "❌ ถามคำถามใหม่", "exit", "ถามคำถามใหม่"]:
-            for k in ["awaiting_clarification", "clarification_rounds", "possible_summaries", "nodes_to_consider", "summary_to_meta", "original_query"]:
+            for k in [
+                "awaiting_clarification",
+                "clarification_rounds",
+                "possible_summaries",
+                "nodes_to_consider",
+                "summary_to_meta",
+                "original_query",
+            ]:
                 cl.user_session.set(k, None)
             await send_with_feedback("✅ คุณได้เลือกเริ่มต้นคำถามใหม่ กรุณาถามคำถามของคุณอีกครั้ง")
             return
@@ -887,18 +997,23 @@ async def on_message(message: cl.Message):
         if choice.lower() == "auto":
             chosen = max(nodes_to_consider, key=lambda n: n.score)
             logger.info(f"[clarify] user requested auto, selecting {chosen.score:.2f}")
-             # clear state
+            # clear state
 
             # clear any leftover clarification state
-            for k in ["awaiting_clarification","clarification_rounds",
-                      "possible_summaries","nodes_to_consider",
-                      "summary_to_meta","original_query"]:
+            for k in [
+                "awaiting_clarification",
+                "clarification_rounds",
+                "possible_summaries",
+                "nodes_to_consider",
+                "summary_to_meta",
+                "original_query",
+            ]:
                 cl.user_session.set(k, None)
 
             return await answer_from_node(chosen, original_query)
 
         selected_index = None
-        SIMILARITY_TIE_THRESHOLD   = 0.03
+        SIMILARITY_TIE_THRESHOLD = 0.03
         # 1) Numeric choice?
         # 1) Numeric choice or opt-out by index
         opt_out_choice = "❌ ถามคำถามใหม่"
@@ -909,9 +1024,18 @@ async def on_message(message: cl.Message):
 
             # ✅ Case: user selected opt-out by number
             if idx < len(summaries) and summaries[idx] == opt_out_choice:
-                for k in ["awaiting_clarification", "clarification_rounds", "possible_summaries", "nodes_to_consider", "summary_to_meta", "original_query"]:
+                for k in [
+                    "awaiting_clarification",
+                    "clarification_rounds",
+                    "possible_summaries",
+                    "nodes_to_consider",
+                    "summary_to_meta",
+                    "original_query",
+                ]:
                     cl.user_session.set(k, None)
-                await send_with_feedback("✅ คุณได้เลือกเริ่มต้นคำถามใหม่ กรุณาพิมพ์คำถามของคุณอีกครั้ง")
+                await send_with_feedback(
+                    "✅ คุณได้เลือกเริ่มต้นคำถามใหม่ กรุณาพิมพ์คำถามของคุณอีกครั้ง"
+                )
                 return
 
             # ✅ Case: normal numeric selection
@@ -933,9 +1057,18 @@ async def on_message(message: cl.Message):
             if best_ratio > 0.6:
                 # ✅ Check again for opt-out by name
                 if summaries[best_i] == opt_out_choice:
-                    for k in ["awaiting_clarification", "clarification_rounds", "possible_summaries", "nodes_to_consider", "summary_to_meta", "original_query"]:
+                    for k in [
+                        "awaiting_clarification",
+                        "clarification_rounds",
+                        "possible_summaries",
+                        "nodes_to_consider",
+                        "summary_to_meta",
+                        "original_query",
+                    ]:
                         cl.user_session.set(k, None)
-                    await send_with_feedback("✅ คุณได้เลือกเริ่มต้นคำถามใหม่ กรุณาพิมพ์คำถามของคุณอีกครั้ง")
+                    await send_with_feedback(
+                        "✅ คุณได้เลือกเริ่มต้นคำถามใหม่ กรุณาพิมพ์คำถามของคุณอีกครั้ง"
+                    )
                     return
 
                 selected_index = best_i
@@ -950,7 +1083,7 @@ async def on_message(message: cl.Message):
 
         # At this point, one node is chosen; now do your tie-break logic…
         # At this point, one node is chosen; now do your tie-break logic…
-                # Pick the node (with a fallback if it somehow ended up None)
+        # Pick the node (with a fallback if it somehow ended up None)
         chosen_node = nodes_to_consider[selected_index]
         if chosen_node is None:
             # Try recovering from summary_to_meta
@@ -967,8 +1100,10 @@ async def on_message(message: cl.Message):
 
         # Now only include real nodes in your tie‐break
         tied = [
-            n for n in nodes_to_consider
-            if n is not None and abs(n.score - chosen_node.score) < SIMILARITY_TIE_THRESHOLD
+            n
+            for n in nodes_to_consider
+            if n is not None
+            and abs(n.score - chosen_node.score) < SIMILARITY_TIE_THRESHOLD
         ]
         from llama_index.core.llms import ChatMessage
 
@@ -982,8 +1117,8 @@ async def on_message(message: cl.Message):
                 full = n.node.text.replace("\n", " ")
                 trunc = full if len(full) <= 1000 else full[:1000] + "…"
                 prompt = (
-                    f"ผู้ใช้ถามว่า: \"{original_query}\"\n"
-                    f"เนื้อหาในเอกสารนี้ (เต็มข้อความ):\n\"\"\"\n{trunc}\n\"\"\"\n"
+                    f'ผู้ใช้ถามว่า: "{original_query}"\n'
+                    f'เนื้อหาในเอกสารนี้ (เต็มข้อความ):\n"""\n{trunc}\n"""\n'
                     "กรุณาสรุปเนื้อหานี้เป็นหัวข้อสั้น ๆ (ไม่เกิน 10 คำ) "
                     "เพื่อให้ผู้ใช้เลือกหัวข้ออีกครั้ง"
                 )
@@ -1006,16 +1141,21 @@ async def on_message(message: cl.Message):
                 content=(
                     "❓ ยังพบเนื้อหาหลายรายการที่คะแนนใกล้เคียงกัน กรุณาช่วยระบุหัวข้อเพิ่มเติม\n\n"
                     + "\n".join(f"{i+1}. {s}" for i, s in enumerate(new_summaries))
-                    + "\n\nโปรดตอบกลับด้วยหมายเลขหรือชื่อหัวข้อที่ต้องการ หรือเลือก \"❌ ถามคำถามใหม่\" หากต้องการเริ่มต้นใหม่"
+                    + '\n\nโปรดตอบกลับด้วยหมายเลขหรือชื่อหัวข้อที่ต้องการ หรือเลือก "❌ ถามคำถามใหม่" หากต้องการเริ่มต้นใหม่'
                 ),
-                author="Customer Service Agent"
+                author="Customer Service Agent",
             )
             return
 
         # 2) Exactly one remains → clear state & answer:
-        for k in ["awaiting_clarification","clarification_rounds",
-                "possible_summaries","nodes_to_consider",
-                "summary_to_meta","original_query"]:
+        for k in [
+            "awaiting_clarification",
+            "clarification_rounds",
+            "possible_summaries",
+            "nodes_to_consider",
+            "summary_to_meta",
+            "original_query",
+        ]:
             cl.user_session.set(k, None)
         return await answer_from_node(chosen_node, original_query)
 
@@ -1023,7 +1163,7 @@ async def on_message(message: cl.Message):
         # At this point, “selected_index” is valid:
         chosen_node = nodes_to_consider[selected_index]
 
-    # … (rest of your clarification logic) …
+        # … (rest of your clarification logic) …
 
         # 7) Check if any other node is still “tied” in score
         SIMILARITY_TIE_THRESHOLD = 0.03
@@ -1032,7 +1172,9 @@ async def on_message(message: cl.Message):
         for lbl, (node_obj, _, _) in summary_to_meta.items():
             if abs(node_obj.score - chosen_score) < SIMILARITY_TIE_THRESHOLD:
                 tied_nodes.append(node_obj)
-        logger.info(f"[clarify] chosen_score={chosen_score:.2f}, tied_nodes={len(tied_nodes)}")
+        logger.info(
+            f"[clarify] chosen_score={chosen_score:.2f}, tied_nodes={len(tied_nodes)}"
+        )
         # ─── prevent endless loops if LLM returns the same list ───
         prev = set(cl.user_session.get("possible_summaries") or [])
         if prev and set(summaries) == prev:
@@ -1044,29 +1186,36 @@ async def on_message(message: cl.Message):
 
         # 8) If more than one node remains tied, re‐summarize just those
         if len(tied_nodes) > 1:
-            logger.info("[clarify] still ambiguous, regenerating summaries for tied nodes")
+            logger.info(
+                "[clarify] still ambiguous, regenerating summaries for tied nodes"
+            )
             llm = get_llm_settings(chat_profile)
             new_summaries = []
             new_summary_to_meta = {}
 
             for n in tied_nodes:
                 full_text = n.node.text.replace("\n", " ")
-                truncated = full_text if len(full_text) <= 1000 else full_text[:1000] + "…"
+                truncated = (
+                    full_text if len(full_text) <= 1000 else full_text[:1000] + "…"
+                )
                 src = n.node.metadata.get("source", "UnknownPolicy")
 
                 summary_prompt = (
-                    f"ผู้ใช้ถามว่า: \"{original_query}\"\n"
-                    f"เนื้อหาในเอกสารนี้ (เต็มข้อความ):\n\"\"\"\n{truncated}\n\"\"\"\n"
+                    f'ผู้ใช้ถามว่า: "{original_query}"\n'
+                    f'เนื้อหาในเอกสารนี้ (เต็มข้อความ):\n"""\n{truncated}\n"""\n'
                     "กรุณาสรุปเนื้อหานี้เป็นหัวข้อสั้น ๆ (ไม่เกิน 10 คำ) "
                     "เพื่อให้ผู้ใช้เลือกหัวข้ออีกครั้ง"
                 )
                 print("-----[DEBUG] (Re‐summarize tied) Full node text:", truncated)
                 try:
                     from llama_index.core.llms import ChatMessage
+
                     resp = llm.chat([ChatMessage(role="user", content=summary_prompt)])
                     one_line = resp.message.content.strip().split("\n")[0].strip()
                 except Exception:
-                    one_line = truncated[:40].strip() + ("…" if len(truncated) > 40 else "")
+                    one_line = truncated[:40].strip() + (
+                        "…" if len(truncated) > 40 else ""
+                    )
 
                 if one_line not in new_summary_to_meta:
                     new_summary_to_meta[one_line] = (n, truncated, src)
@@ -1084,24 +1233,28 @@ async def on_message(message: cl.Message):
                     "❓ ยังพบเนื้อหาหลายรายการที่คะแนนใกล้เคียงกัน กรุณาช่วยระบุหัวข้อเพิ่มเติม\n\n"
                     "หัวข้อที่เป็นไปได้:\n"
                     + "\n".join(f"{i+1}. {s}" for i, s in enumerate(new_summaries))
-                    + "\n\nโปรดตอบกลับด้วยหมายเลขหรือชื่อหัวข้อที่ต้องการ หรือเลือก \"❌ ถามคำถามใหม่\" หากต้องการเริ่มต้นใหม่"
+                    + '\n\nโปรดตอบกลับด้วยหมายเลขหรือชื่อหัวข้อที่ต้องการ หรือเลือก "❌ ถามคำถามใหม่" หากต้องการเริ่มต้นใหม่'
                 ),
-                author="Customer Service Agent"
+                author="Customer Service Agent",
             )
-            logger.info(f"[clarify] prompt round {rounds+1} sent with {len(new_summaries)} options")
+            logger.info(
+                f"[clarify] prompt round {rounds+1} sent with {len(new_summaries)} options"
+            )
             return
 
         # 9) Exactly one node remains → build the final LLM prompt
-        logger.info(f"[clarify] resolved to single node {chosen_node.score:.2f}, exiting loop")
+        logger.info(
+            f"[clarify] resolved to single node {chosen_node.score:.2f}, exiting loop"
+        )
         cl.user_session.set("awaiting_clarification", False)
         cl.user_session.set("possible_summaries", None)
         cl.user_session.set("summary_to_meta", None)
         cl.user_session.set("original_query", None)
 
         filtered_query = (
-            f"ผู้ใช้ถามว่า: \"{original_query}\"\n"
-            f"บทความที่เลือกมาจากเอกสารนโยบาย \"{source_name}\" (เต็มข้อความ):\n"
-            f"\"\"\"\n{truncated_text}\n\"\"\"\n\n"
+            f'ผู้ใช้ถามว่า: "{original_query}"\n'
+            f'บทความที่เลือกมาจากเอกสารนโยบาย "{source_name}" (เต็มข้อความ):\n'
+            f'"""\n{truncated_text}\n"""\n\n'
             "กรุณาตอบโดยอาศัยเนื้อหาในบทความนี้ และในคำตอบให้ระบุชื่อเอกสารนโยบายด้วย"
         )
         print("-----[DEBUG] Final filtered_query (single node):-----")
@@ -1127,10 +1280,7 @@ async def on_message(message: cl.Message):
         ]
 
         # 2) Send your answer + buttons in one call
-        msg = cl.Message(
-            content="",
-            actions=buttons
-        )
+        msg = cl.Message(content="", actions=buttons)
         await msg.send()
 
         full_text = (
@@ -1147,10 +1297,11 @@ async def on_message(message: cl.Message):
         await msg.update()
 
         # 3) Persist your log
-        save_conversation_log(thread_id, message.id, role="bot", content=answer, difficulty="Clarified")
+        save_conversation_log(
+            thread_id, message.id, role="bot", content=answer, difficulty="Clarified"
+        )
 
         return
-
 
     # === Thresholds ===
     FUZZY_THRESHOLD = 0.7
@@ -1187,7 +1338,7 @@ async def on_message(message: cl.Message):
     # === Ambiguity (Too‐broad) Check ===
     # === SIMILARITY_TIE_THRESHOLD = 0.03
     # === MAX_TOPICS_BEFORE_CLARIFY = 3
-    SIMILARITY_TIE_THRESHOLD   = 0.03
+    SIMILARITY_TIE_THRESHOLD = 0.03
     scores = [n.score for n in nodes[:MAX_TOPICS_BEFORE_CLARIFY]]
     if (
         len(scores) >= 2
@@ -1226,8 +1377,8 @@ async def on_message(message: cl.Message):
             source_name = n.node.metadata.get("source", "UnknownPolicy")
 
             summary_prompt = (
-                f"ผู้ใช้ถามว่า: \"{message.content}\"\n"
-                f"เนื้อหาในเอกสารนี้ (เต็มข้อความ):\n\"\"\"\n{truncated}\n\"\"\"\n"
+                f'ผู้ใช้ถามว่า: "{message.content}"\n'
+                f'เนื้อหาในเอกสารนี้ (เต็มข้อความ):\n"""\n{truncated}\n"""\n'
                 "กรุณาสรุปเนื้อหานี้เป็นหัวข้อเพื่อให้ผู้ใช้เลือก นี่คือหัวข้อย่อยที่ผู้ใช้จะเลือกเมื่อคำตอบอาจเป็นไปได้หลายกรณี เริ่มต้นประโยคด้วย กรณี เสมอ"
             )
 
@@ -1237,6 +1388,7 @@ async def on_message(message: cl.Message):
             print(summary_prompt)
 
             from llama_index.core.llms import ChatMessage
+
             try:
                 resp = llm.chat([ChatMessage(role="user", content=summary_prompt)])
                 one_line = resp.message.content.strip().split("\n")[0].strip()
@@ -1270,9 +1422,7 @@ async def on_message(message: cl.Message):
             payload = {
                 "summaries": summaries,
                 "nodes": [
-                    {"score": n.score,
-                    "text":  n.node.text,
-                    "meta":  n.node.metadata}
+                    {"score": n.score, "text": n.node.text, "meta": n.node.metadata}
                     for n in nodes_to_summarize
                 ],
                 # if you want to restore summary_to_meta/original_query later, include them here too
@@ -1281,34 +1431,34 @@ async def on_message(message: cl.Message):
             }
 
             # Persist (upsert) into your clarification_state table
-            dl = get_data_layer()           # SQLAlchemyDataLayer
-            engine = dl.engine              # its AsyncEngine
+            dl = get_data_layer()  # SQLAlchemyDataLayer
+            engine = dl.engine  # its AsyncEngine
             async with AsyncSession(engine) as session:
                 await session.execute(
                     insert(clarification_state)
                     .values(thread_id=thread_id, **payload)
-                    .on_conflict_do_update(
-                        index_elements=["thread_id"],
-                        set_=payload
-                    )
+                    .on_conflict_do_update(index_elements=["thread_id"], set_=payload)
                 )
                 await session.execute(stmt)
                 await session.commit()
 
             truncated_text, source_name = summary_to_meta[selected_topic]
             filtered_query = (
-                f"ผู้ใช้ถามว่า: \"{original_query}\"\n"
-                f"บทความที่เลือกมาจากเอกสารนโยบาย \"{source_name}\" "
-                f"ภายใต้หัวข้อ \"{selected_topic}\" (เต็มข้อความ):\n"
-                f"\"\"\"\n{truncated_text}\n\"\"\"\n"
+                f'ผู้ใช้ถามว่า: "{original_query}"\n'
+                f'บทความที่เลือกมาจากเอกสารนโยบาย "{source_name}" '
+                f'ภายใต้หัวข้อ "{selected_topic}" (เต็มข้อความ):\n'
+                f'"""\n{truncated_text}\n"""\n'
                 "กรุณาตอบโดยอาศัยเนื้อหาในบทความนี้ และในคำตอบให้ระบุชื่อเอกสารนโยบายและหัวข้อด้วย"
             )
 
-            print("-----[DEBUG] Single‐choice auto‐selected topic:-----", selected_topic)
+            print(
+                "-----[DEBUG] Single‐choice auto‐selected topic:-----", selected_topic
+            )
             print("-----[DEBUG] Filtered query sent to LLM:-----")
             print(filtered_query)
 
             from llama_index.core.llms import ChatMessage
+
             try:
                 resp = runnable.query(filtered_query)
                 if hasattr(resp, "response"):
@@ -1331,9 +1481,15 @@ async def on_message(message: cl.Message):
                     f"🧠 *DEBUG* Auto‐selected single topic"
                 ),
                 author="Customer Service Agent",
-                metadata={"difficulty": "Clarified"}
+                metadata={"difficulty": "Clarified"},
             )
-            save_conversation_log(thread_id, message.id, role="bot", content=answer, difficulty="Clarified")
+            save_conversation_log(
+                thread_id,
+                message.id,
+                role="bot",
+                content=answer,
+                difficulty="Clarified",
+            )
             return
 
         # Otherwise, show the list so the user can choose:
@@ -1348,14 +1504,18 @@ async def on_message(message: cl.Message):
                 "❓ พบเอกสารหลายรายการที่อาจเกี่ยวข้องกับคำถามของคุณ\n\n"
                 "หัวข้อที่เป็นไปได้:\n"
                 + "\n".join(f"{i+1}. {s}" for i, s in enumerate(summaries))
-                + "\n\nโปรดตอบกลับด้วยหมายเลขหรือชื่อหัวข้อที่ต้องการ หรือเลือก \"❌ ถามคำถามใหม่\" หากต้องการเริ่มต้นใหม่"
+                + '\n\nโปรดตอบกลับด้วยหมายเลขหรือชื่อหัวข้อที่ต้องการ หรือเลือก "❌ ถามคำถามใหม่" หากต้องการเริ่มต้นใหม่'
             ),
-            author="Customer Service Agent"
+            author="Customer Service Agent",
         )
 
         cl.user_session.set("awaiting_clarification", True)
-        cl.user_session.set("possible_summaries", summaries)       # ← store under “possible_summaries”
-        cl.user_session.set("nodes_to_consider", nodes_to_summarize)  # ← store the actual Node objects
+        cl.user_session.set(
+            "possible_summaries", summaries
+        )  # ← store under “possible_summaries”
+        cl.user_session.set(
+            "nodes_to_consider", nodes_to_summarize
+        )  # ← store the actual Node objects
         cl.user_session.set("summary_to_meta", summary_to_meta)
         cl.user_session.set("original_query", message.content)
 
@@ -1363,15 +1523,13 @@ async def on_message(message: cl.Message):
         from sqlalchemy.ext.asyncio import AsyncSession
 
         # after your cl.user_session.set(...) calls:
-        dl = get_data_layer()                # your SQLAlchemyDataLayer instance
-        engine = dl.engine                   # AsyncEngine
+        dl = get_data_layer()  # your SQLAlchemyDataLayer instance
+        engine = dl.engine  # AsyncEngine
         # serialize only the bits you need
         payload = {
             "summaries": summaries,
             "nodes": [
-                {"score": n.score,
-                "text":  n.node.text,
-                "meta":  n.node.metadata}
+                {"score": n.score, "text": n.node.text, "meta": n.node.metadata}
                 for n in nodes_to_summarize
             ],
         }
@@ -1379,10 +1537,7 @@ async def on_message(message: cl.Message):
             await session.execute(
                 insert(clarification_state)
                 .values(thread_id=thread_id, **payload)
-                .on_conflict_do_update(
-                    index_elements=["thread_id"],
-                    set_=payload
-                )
+                .on_conflict_do_update(index_elements=["thread_id"], set_=payload)
             )
             await session.commit()
         return
@@ -1408,7 +1563,7 @@ async def on_message(message: cl.Message):
         msg = cl.Message(
             content="",
             author="Customer Service Agent",
-            metadata={"difficulty": "Rejected"}
+            metadata={"difficulty": "Rejected"},
         )
         await msg.send()
 
@@ -1417,7 +1572,9 @@ async def on_message(message: cl.Message):
             await asyncio.sleep(0.005)  # Optional animation delay
 
         await msg.update()
-        save_conversation_log(thread_id, message.id, role="bot", content="Rejected", difficulty="Reject")
+        save_conversation_log(
+            thread_id, message.id, role="bot", content="Rejected", difficulty="Reject"
+        )
         return
 
     if level == "Easy":
@@ -1434,9 +1591,11 @@ async def on_message(message: cl.Message):
                 f"Matched Q: {best_question}"
             ),
             author="Customer Service Agent",
-            metadata={"difficulty": "Easy"}
+            metadata={"difficulty": "Easy"},
         )
-        save_conversation_log(thread_id, message.id, role="bot", content=best_match, difficulty="Easy")
+        save_conversation_log(
+            thread_id, message.id, role="bot", content=best_match, difficulty="Easy"
+        )
         return
 
     if level == "Medium":
@@ -1455,13 +1614,13 @@ async def on_message(message: cl.Message):
         context_str = ""
         for idx, (src, txt) in enumerate(contexts, start=1):
             context_str += (
-                f"({idx}) เอกสารนโยบาย: \"{src}\"\n"
-                f"เนื้อหาชิ้นนี้ (เต็มข้อความ):\n\"\"\"\n{txt}\n\"\"\"\n\n"
+                f'({idx}) เอกสารนโยบาย: "{src}"\n'
+                f'เนื้อหาชิ้นนี้ (เต็มข้อความ):\n"""\n{txt}\n"""\n\n'
             )
 
         # 3) Craft a single “filtered_query” that includes all top‐K chunks
         filtered_query = (
-            f"ผู้ใช้ถามว่า: \"{message.content}\"\n\n"
+            f'ผู้ใช้ถามว่า: "{message.content}"\n\n'
             f"กรุณาตอบโดยอาศัยเนื้อหาต่อไปนี้ทั้งหมด:\n\n"
             f"{context_str}"
             "ในคำตอบให้ระบุชื่อเอกสารนโยบายที่ใช้ และชี้ว่าอ้างอิงมาจากข้อความใดบ้าง"
@@ -1492,7 +1651,7 @@ async def on_message(message: cl.Message):
         answer_body = extract_and_format_table(answer_body)
 
         # 6) Prefix the final answer with a note about which documents were used
-        sources_used = ", ".join(f"\"{src}\"" for src, _ in contexts)
+        sources_used = ", ".join(f'"{src}"' for src, _ in contexts)
         final_answer = (
             f"📚 จากเอกสารนโยบาย: {sources_used}\n\n"
             f"{answer_body}\n\n"
@@ -1504,10 +1663,7 @@ async def on_message(message: cl.Message):
             f"Fuzzy Score: {fuzzy_score:.2f}"
         )
 
-        msg = cl.Message(
-            content="",
-            metadata={"difficulty": "Medium"}
-        )
+        msg = cl.Message(content="", metadata={"difficulty": "Medium"})
         await msg.send()
 
         for char in final_answer:
@@ -1515,7 +1671,9 @@ async def on_message(message: cl.Message):
             await asyncio.sleep(0.005)  # Adjust speed for animation feel
 
         await msg.update()
-        save_conversation_log(thread_id, message.id, role="bot", content=final_answer, difficulty="Medium")
+        save_conversation_log(
+            thread_id, message.id, role="bot", content=final_answer, difficulty="Medium"
+        )
         return
 
     if level == "Hard":
@@ -1528,10 +1686,7 @@ async def on_message(message: cl.Message):
             f"Vector Score: {top_score:.2f}\n"
             f"Fuzzy Score: {fuzzy_score:.2f}"
         )
-        msg = cl.Message(
-            content="",
-            metadata={"difficulty": "Hard"}
-        )
+        msg = cl.Message(content="", metadata={"difficulty": "Hard"})
         await msg.send()
 
         for char in final_answer:
@@ -1541,16 +1696,13 @@ async def on_message(message: cl.Message):
         await msg.update()
 
         save_conversation_log(
-            thread_id,
-            message.id,
-            role="bot",
-            content=final_answer,
-            difficulty="Hard"
+            thread_id, message.id, role="bot", content=final_answer, difficulty="Hard"
         )
         return
 
 
 shown_admin_replies = {}
+
 
 async def poll_admin_reply(thread_id: str, parent_id: str):
     key = f"admin-reply:{thread_id}:{parent_id}"
@@ -1578,10 +1730,11 @@ async def poll_admin_reply(thread_id: str, parent_id: str):
 
                 # ⬆️ Push the original parent message
                 await send_with_feedback(
-                    content=f"🧾 Original Question:\n\n{parent_content}",
-                    author="User"
+                    content=f"🧾 Original Question:\n\n{parent_content}", author="User"
                 )
-                save_conversation_log(thread_id, parent_id, role="admin", content=cleaned)
+                save_conversation_log(
+                    thread_id, parent_id, role="admin", content=cleaned
+                )
 
                 # ⬇️ Push each reply (sorted by timestamp if needed)
                 for r in replies:
@@ -1590,7 +1743,7 @@ async def poll_admin_reply(thread_id: str, parent_id: str):
                         await send_with_feedback(
                             content=f"📬 Reply from Admin:\n\n{content}",
                             author="Admin",
-                            parent_id=parent_id
+                            parent_id=parent_id,
                         )
 
                 shown_admin_replies[key] = last_id
@@ -1601,9 +1754,13 @@ async def poll_admin_reply(thread_id: str, parent_id: str):
                     "parent_id": parent_id,
                     "user_question": parent_content,
                     "admin_replies": replies,
-                    "timestamp": time.time()
+                    "timestamp": time.time(),
                 }
-                redis_client.setex(f"log:admin_reply:{thread_id}:{parent_id}", 86400, json.dumps(conv_log))
+                redis_client.setex(
+                    f"log:admin_reply:{thread_id}:{parent_id}",
+                    86400,
+                    json.dumps(conv_log),
+                )
                 print("📥 Saved admin conversation log.")
 
                 return
@@ -1617,5 +1774,3 @@ async def poll_admin_reply(thread_id: str, parent_id: str):
         await asyncio.sleep(5)
 
     print(f"⌛ Timeout: No admin reply found after 60 attempts for key: {key}")
-
-
