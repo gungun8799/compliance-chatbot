@@ -37,3 +37,4 @@ wheels/
 MANIFEST
 
 .DS_Store
+.vscode/settings.json
