@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
+logger.info("Qdrant URL: %s", os.getenv("QDRANT_URL"))
 
 class QdrantManager:
     """Manages Qdrant client and vector stores."""
