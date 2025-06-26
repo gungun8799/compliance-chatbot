@@ -140,8 +140,8 @@ Settings.context_window = 12000
 
 # # Set up embedding model
 # Settings.embed_model = CohereEmbedding(
-#     api_key=os.getenv("COHERE_API_KEY"),
-#     model_name=os.getenv("COHERE_MODEL_ID"),
+#     api_key=COHERE_API_KEY,
+#     model_name=COHERE_MODEL_ID,
 #     input_type="search_document",
 #     embedding_type="float",
 # )
