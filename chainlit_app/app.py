@@ -80,7 +80,7 @@ COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME")
 REDIS_CHATSTORE_URI = os.getenv("REDIS_CHATSTORE_URI")
 REDIS_CHATSTORE_PASSWORD = os.getenv("REDIS_CHATSTORE_PASSWORD")
-TOKEN_LIMIT = 512
+TOKEN_LIMIT = 512 # Default token limit for chat memory
 TRACE_ENDPOINT = os.getenv("TRACE_ENDPOINT")
 TRACE_PROJECT_NAME = os.getenv("TRACE_PROJECT_NAME")
 MS_TEAMS_WORKFLOW_URL = os.getenv("MS_TEAMS_WORKFLOW_URL")
@@ -97,6 +97,7 @@ SIMILARITY_TIE_THRESHOLD = 0.03
 FUZZY_THRESHOLD = 0.7
 VECTOR_MIN_THRESHOLD = 0.45
 VECTOR_MEDIUM_THRESHOLD = 0.75
+CONTEXT_WINDOW = 12000
 
 # Redis Client
 parsed_redis_url = urlparse(REDIS_CHATSTORE_URI)
@@ -136,7 +137,7 @@ chat_store = RedisChatStore(
 qdrant_manager = QdrantManager()
 
 # LlamaIndex Settings
-Settings.context_window = 12000
+Settings.context_window = CONTEXT_WINDOW
 
 # Dynamically set embedding model based on .env file
 EMBEDDING_SERVICE = os.getenv("EMBEDDING_SERVICE", "text_embeddings_inference").lower()
