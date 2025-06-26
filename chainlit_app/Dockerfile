@@ -17,5 +17,5 @@ EXPOSE 8010
 
 # Run main.py when the container launches
 # Dockerfile
-CMD ["python", "-m", "chainlit", "run", "app.py", "--port", "8010", "--host", "0.0.0.0"]
-# CMD ["python", "-m", "chainlit", "run", "app.py", "-h", "--port", "8010", "--root-path", "/compliance-chat"]
+# CMD ["python", "-m", "chainlit", "run", "app.py", "--port", "8010", "--host", "0.0.0.0"]
+ENTRYPOINT ["/app/entrypoint.sh"]
