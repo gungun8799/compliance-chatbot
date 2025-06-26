@@ -50,8 +50,14 @@ patch.apply_patch()
 # Configuration and Initialization
 # ======================================================================================
 
-# Load from root .env file
-load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
+# Determine environment mode
+env_mode = os.getenv("ENV_MODE", "dev")  # default to "dev" if not set
+
+# Build path to appropriate .env file
+env_file = Path(__file__).resolve().parents[1] / f".env.{env_mode}"
+
+# Load the selected .env file
+load_dotenv(dotenv_path=env_file)
 
 # Logging
 logging.basicConfig(level=logging.INFO)
