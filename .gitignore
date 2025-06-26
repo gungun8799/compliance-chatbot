@@ -38,3 +38,4 @@ MANIFEST
 
 .DS_Store
 .vscode/settings.json
+.env
