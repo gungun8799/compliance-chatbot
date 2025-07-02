@@ -92,10 +92,13 @@ logger.info(f"✅ Loaded CHAINLIT_AUTH_SECRET: {CHAINLIT_AUTH_SECRET}")
 
 # Constants
 MAX_CLARIFICATION_ROUNDS = 2
-MAX_TOPICS_BEFORE_CLARIFY = 3
+MAX_FUZZY_CLARIFICATION_ROUNDS = 3
+MAX_TOPICS_BEFORE_CLARIFY = 7
+MAX_FUZZY_CLARIFY_TOPICS = 5
 SIMILARITY_TIE_THRESHOLD = 0.03
-FUZZY_THRESHOLD = 0.7
-VECTOR_MIN_THRESHOLD = 0.45
+FUZZY_THRESHOLD = 0.55
+FUZZY_CLARIFY_THRESHOLD = 0.85  # 👈 triggers clarification when multiple fuzzy candidates exist
+VECTOR_MIN_THRESHOLD = 0.4
 VECTOR_MEDIUM_THRESHOLD = 0.75
 CONTEXT_WINDOW = 12000
 
@@ -183,13 +186,13 @@ CHAT_PROFILES = {
         "context_prompt": SYSTEM_PROMPT_STANDARD,
         "welcome_message": "Hi there! Need help with accounting compliance?",
         "llm_settings": {
-            "model": LLM_MODEL_ID,
-            "api_base": LLM_BASE_URL,
-            "api_key": API_KEY_CHATBOT,
+            "model": GROQ_MODEL_ID_2,
+            #"api_base": LLM_BASE_URL,
+            "api_key": GROQ_API_KEY,
             "is_chat_model": True,
             "is_function_calling_model": False,
-            "temperature": 0.7,
-            "http_client": httpx.Client(verify=False),
+            "temperature": 0.2,
+            #"http_client": httpx.Client(verify=False),
         },
     },
 }
@@ -310,9 +313,9 @@ def get_llm_settings(chat_profile: str):
     if not settings:
         raise ValueError(f"No LLM settings found for profile: {chat_profile}")
 
-    if chat_profile == "Accounting Compliance":
+    if chat_profile == "Accounting Compliance 2":
         return OpenAILike(**settings)
-    elif chat_profile == "Deepthink":
+    elif chat_profile == "Accounting Compliance":
         return Groq(**settings)
     else:
         raise ValueError(f"Unsupported chat profile: {chat_profile}")
@@ -364,11 +367,12 @@ def setup_runnable():
 # Clarification Flow Logic
 # ======================================================================================
 
+
+
 def clear_clarification_state():
-    """Clears all clarification-related state from the user session."""
     for key in [
-        "awaiting_clarification", "clarification_rounds", "possible_summaries",
-        "nodes_to_consider", "summary_to_meta", "original_query"
+        "awaiting_clarification", "clarification_rounds", "fuzzy_clarification_rounds",
+        "possible_summaries", "nodes_to_consider", "summary_to_meta", "original_query"
     ]:
         cl.user_session.set(key, None)
 
@@ -409,8 +413,93 @@ def auth_callback(username: str, password: str):
     """Handles user authentication."""
     if (username, password) == ("admin", "admin"):
         logger.info("✅ Login success for admin")
-        return cl.User(identifier="admin", metadata={"role": "ADMIN", "email": "chatbot_admin@gmail.com", "provider": "credentials"})
-    logger.warning("❌ Login failed")
+        return cl.User(
+            identifier="admin",
+            metadata={
+                "role": "ADMIN",
+                "email": "chatbot_admin@gmail.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_1", "123456"):
+        logger.info("✅ Login success for User_1")
+        return cl.User(
+            identifier="User_1",
+            metadata={
+                "role": "USER",
+                "email": "user_1@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_2", "123456"):
+        logger.info("✅ Login success for User_2")
+        return cl.User(
+            identifier="User_2",
+            metadata={
+                "role": "USER",
+                "email": "user_2@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_3", "123456"):
+        logger.info("✅ Login success for User_3")
+        return cl.User(
+            identifier="User_3",
+            metadata={
+                "role": "USER",
+                "email": "user_3@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_4", "123456"):
+        logger.info("✅ Login success for User_4")
+        return cl.User(
+            identifier="User_4",
+            metadata={
+                "role": "USER",
+                "email": "user_4@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_5", "123456"):
+        logger.info("✅ Login success for User_5")
+        return cl.User(
+            identifier="User_5",
+            metadata={
+                "role": "USER",
+                "email": "user_5@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_6", "123456"):
+        logger.info("✅ Login success for User_6")
+        return cl.User(
+            identifier="User_6",
+            metadata={
+                "role": "USER",
+                "email": "user_6@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_7", "123456"):
+        logger.info("✅ Login success for User_7")
+        return cl.User(
+            identifier="User_7",
+            metadata={
+                "role": "USER",
+                "email": "user_7@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    logger.warning(f"❌ Login failed for {username}")
     return None
 
 
@@ -514,6 +603,10 @@ async def on_message(message: cl.Message):
     thread_id = cl.context.session.thread_id
 
     save_conversation_log(thread_id, message.id, role="user", content=message.content)
+    memory = cl.user_session.get("memory")
+    memory.put(ChatMessage(role="user", content=message.content))
+    # Prevent leftover input from being interpreted as a new question
+
 
     if not runnable or not retriever:
         await send_with_feedback("⚠️ System not ready. Please try again later.")
@@ -530,23 +623,70 @@ async def on_message(message: cl.Message):
 # ======================================================================================
 
 async def handle_clarification_response(message: cl.Message):
+
+
     """Handles user's response during a clarification flow."""
+    # 🛡️ Short-circuit: prevent re-entering after user just exited clarification
+    if cl.user_session.get("clarification_just_exited"):
+        logger.warning("⛔ clarification_just_exited is True — skipping clarification logic")
+        return
+        
     nodes_to_consider = cl.user_session.get("nodes_to_consider", [])
     summaries = cl.user_session.get("possible_summaries", [])
     original_query = cl.user_session.get("original_query", "")
     rounds = cl.user_session.get("clarification_rounds", 0)
 
     if rounds >= MAX_CLARIFICATION_ROUNDS:
-        chosen = max(nodes_to_consider, key=lambda n: n.score)
-        logger.info(f"[clarify] Max rounds reached, auto-selecting node with score {chosen.score:.2f}")
+        summary_to_meta = cl.user_session.get("summary_to_meta", {})
+        fuzzy_candidates = [(q, s[2]) for q, s in summary_to_meta.items() if isinstance(s, tuple) and s[0] == "fuzzy"]
+
+        if fuzzy_candidates:
+            best_question, score = max(fuzzy_candidates, key=lambda x: x[1])
+            answer = predefined_answers.get(best_question, "")
+            await send_with_feedback(
+                f"{answer}\n\n🧠 DEBUG | Easy (Auto-picked fuzzy after max rounds) | Score: {score:.2f}"
+            )
+            save_conversation_log(cl.context.session.thread_id, None, "bot", answer, "Easy")
+            clear_clarification_state()
+            return
+
+        if nodes_to_consider:
+            chosen = max(nodes_to_consider, key=lambda n: n.score)
+            logger.info(f"[clarify] Max rounds reached, auto-selecting node with score {chosen.score:.2f}")
+            clear_clarification_state()
+            return await answer_from_node(chosen, original_query)
+
+        # Nothing to do
+        await send_with_feedback("⚠️ ไม่พบข้อมูลที่เกี่ยวข้อง กรุณาพิมพ์คำถามใหม่")
         clear_clarification_state()
-        return await answer_from_node(chosen, original_query)
+        return
 
     cl.user_session.set("clarification_rounds", rounds + 1)
     choice = message.content.strip()
+    opt_out_index = None
+    opt_out_label = "❌ ถามคำถามใหม่"
+    if opt_out_label in summaries:
+        opt_out_index = summaries.index(opt_out_label)
 
-    if choice.lower() in ["❌", "❌ ถามคำถามใหม่", "exit", "ถามคำถามใหม่"]:
+    # If user types a number that matches the opt-out
+    if choice.isdigit() and opt_out_index is not None and int(choice) - 1 == opt_out_index:
         clear_clarification_state()
+        cl.user_session.set("awaiting_clarification", False)
+        cl.user_session.set("clarification_just_exited", True)
+        await send_with_feedback("✅ คุณได้เลือกเริ่มต้นคำถามใหม่ กรุณาถามคำถามของคุณอีกครั้ง")
+        return
+
+    # Also still support typing the opt-out text manually
+    if choice.strip() in ["❌", "❌ ถามคำถามใหม่", "exit", "ถามคำถามใหม่"]:
+        clear_clarification_state()
+        cl.user_session.set("awaiting_clarification", False)
+        cl.user_session.set("clarification_just_exited", True)
+        await send_with_feedback("✅ คุณได้เลือกเริ่มต้นคำถามใหม่ กรุณาถามคำถามของคุณอีกครั้ง")
+        return
+        clear_clarification_state()
+        cl.user_session.set("awaiting_clarification", False)
+        cl.user_session.set("clarification_just_exited", True)
+        cl.user_session.set("clarification_reset_waiting", True)  # ✅ NEW
         await send_with_feedback("✅ คุณได้เลือกเริ่มต้นคำถามใหม่ กรุณาถามคำถามของคุณอีกครั้ง")
         return
 
@@ -569,34 +709,101 @@ async def handle_clarification_response(message: cl.Message):
         await send_with_feedback("⚠️ ไม่พบหัวข้อที่เลือก โปรดพิมพ์หมายเลขหรือชื่อหัวข้อให้ถูกต้องอีกครั้ง")
         return
 
+
     # Handle tie-breaking
-    chosen_node = nodes_to_consider[selected_index]
-    tied_nodes = [n for n in nodes_to_consider if abs(n.score - chosen_node.score) < SIMILARITY_TIE_THRESHOLD]
+    summary_to_meta = cl.user_session.get("summary_to_meta", {})
+    fuzzy_rounds = cl.user_session.get("fuzzy_clarification_rounds", 0)
 
-    if len(tied_nodes) > 1:
-        await re_clarify(tied_nodes, original_query)
-    else:
+    if selected_index >= len(summaries):
+        await send_with_feedback("⚠️ ไม่พบหัวข้อที่เลือก โปรดพิมพ์หมายเลขหรือชื่อหัวข้อให้ถูกต้องอีกครั้ง")
+        return
+
+    selected_summary = summaries[selected_index]
+
+    # ✅ Auto-pick fuzzy match if too many clarification rounds
+    if fuzzy_rounds >= MAX_FUZZY_CLARIFICATION_ROUNDS:
+        fuzzy_candidates = [(q, s[2]) for q, s in summary_to_meta.items() if isinstance(s, tuple) and s[0] == "fuzzy"]
+        if fuzzy_candidates:
+            best_question, score = max(fuzzy_candidates, key=lambda x: x[1])
+            answer = predefined_answers.get(best_question, "")
+            await send_with_feedback(
+                f"{answer}\n\n🧠 DEBUG | Easy (Auto-picked fuzzy) | Score: {score:.2f}"
+            )
+            save_conversation_log(cl.context.session.thread_id, None, "bot", answer, "Easy")
+            clear_clarification_state()
+            return
+        else:
+            await send_with_feedback("⚠️ ไม่พบคำถามสำเร็จรูปที่ตรง กรุณาลองถามใหม่")
+            clear_clarification_state()
+            return
+
+    # ✅ If user selected a fuzzy entry
+    if isinstance(summary_to_meta.get(selected_summary), tuple) and summary_to_meta[selected_summary][0] == "fuzzy":
+        _, answer, score = summary_to_meta[selected_summary]
+        await send_with_feedback(
+            f"{answer}\n\n🧠 *DEBUG* | Category: **Easy (Clarified)** | Method: **Predefined** | Fuzzy: {score:.2f}",
+            metadata={"difficulty": "Easy"},
+        )
+        save_conversation_log(cl.context.session.thread_id, None, "bot", answer, "Easy")
         clear_clarification_state()
-        await answer_from_node(chosen_node, original_query)
+        return
 
+    # ✅ Else fallback to vector node
+    if nodes_to_consider and selected_index < len(nodes_to_consider):
+        chosen_node = nodes_to_consider[selected_index]
+        await answer_from_node(chosen_node, original_query)
+    elif nodes_to_consider:
+        chosen_node = max(nodes_to_consider, key=lambda n: n.score)
+        await answer_from_node(chosen_node, original_query)
+        clear_clarification_state()
+    else:
+        await send_with_feedback("⚠️ ไม่พบเนื้อหาที่เกี่ยวข้อง โปรดลองเลือกหัวข้อใหม่หรือลองถามใหม่อีกครั้ง")
+        clear_clarification_state()
 
 async def re_clarify(nodes: list, original_query: str):
-    """Asks for another round of clarification on a smaller set of nodes."""
+    """Asks for another round of clarification on a smaller set of nodes using a single LLM call."""
     llm = get_llm_settings(cl.user_session.get("chat_profile"))
-    new_summaries, new_meta = [], {}
 
-    for n in nodes:
-        trunc = n.node.text[:1000] + "…" if len(n.node.text) > 1000 else n.node.text
-        prompt = (
-            f'ผู้ใช้ถามว่า: "{original_query}"\n'
-            f'เนื้อหาในเอกสารนี้ (เต็มข้อความ):\n"""{trunc}\n"""\n'
-            "กรุณาสรุปเนื้อหานี้เป็นหัวข้อสั้น ๆ (ไม่เกิน 10 คำ) เพื่อให้ผู้ใช้เลือกหัวข้ออีกครั้ง"
-        )
-        resp = llm.chat([ChatMessage(role="user", content=prompt)])
-        one_line = resp.message.content.strip().split("\n")[0]
-        if one_line not in new_meta:
-            new_meta[one_line] = n
-            new_summaries.append(one_line)
+    truncs = []
+    node_map = {}
+
+    for i, n in enumerate(nodes, 1):
+        section_title = n.node.metadata.get("section_title", "")
+        body_preview = n.node.text[:1000].strip().replace("\n", " ")
+        preview_text = f"หัวข้อ: {section_title}\n{body_preview}" if section_title else body_preview
+        truncs.append(f"({i}) {preview_text}")
+        node_map[str(i)] = n
+
+
+    # Add memory history
+    memory: ChatMemoryBuffer = cl.user_session.get("memory")
+    prior_messages = memory.get()
+    logger.info("🧠 Chat Memory Content:")
+    for m in prior_messages:
+        logger.info(f"{m.role.upper()}: {m.content.strip()}")
+    history_snippets = "\n".join(f"{m.role.title()}: {m.content.strip()}" for m in prior_messages if m.content.strip())
+
+    batched_prompt = (
+        f'ผู้ใช้ถามว่า: "{original_query}"\n\n'
+        f"📜 ประวัติการสนทนา:\n{history_snippets}\n\n"
+        f"ต่อไปนี้คือเนื้อหาจากหลายเอกสารที่อาจเกี่ยวข้อง:\n\n"
+        + "\n\n".join(truncs)
+        + "\n\nกรุณาสรุปแต่ละย่อหน้าเป็นหัวข้อย่อยไม่เกิน 10 คำ โดยใช้หมายเลขเดียวกับเนื้อหา เช่น (1) กรณี..., (2) กรณี..., เป็นต้น"
+    )
+
+    resp = llm.chat([ChatMessage(role="user", content=batched_prompt)])
+    lines = resp.message.content.strip().splitlines()
+
+    new_summaries = []
+    new_meta = {}
+
+    for line in lines:
+        match = re.match(r"\(?(\d+)\)?[\.、:]?\s*(.*)", line)
+        if match:
+            idx, summary = match.groups()
+            if idx in node_map and summary not in new_meta:
+                new_summaries.append(summary)
+                new_meta[summary] = node_map[idx]
 
     opt_out_choice = "❌ ถามคำถามใหม่"
     if opt_out_choice not in new_summaries:
@@ -618,59 +825,163 @@ async def re_clarify(nodes: list, original_query: str):
 
 async def handle_standard_query(message: cl.Message):
     """Handles a standard, non-clarification query."""
+    # Short-circuit: ignore leftover responses after exiting clarification
+    # If clarification just ended, reset and wait for a real new query
+    if cl.user_session.get("clarification_reset_waiting"):
+        content = message.content.strip()
+        if content.isdigit() or len(content) <= 2:
+            await send_with_feedback("✅ กรุณาพิมพ์คำถามใหม่ที่คุณต้องการสอบถาม")
+            return
+        cl.user_session.set("clarification_reset_waiting", False)
+
+    if cl.user_session.get("clarification_just_exited"):
+        cl.user_session.set("clarification_just_exited", False)
+        cl.user_session.set("clarification_reset_waiting", True)
+        cl.user_session.set("awaiting_clarification", False)
+        cl.user_session.set("clarification_rounds", 0)
+        cl.user_session.set("fuzzy_clarification_rounds", 0)
+        cl.user_session.set("possible_summaries", None)
+        cl.user_session.set("nodes_to_consider", None)
+        cl.user_session.set("summary_to_meta", None)
+        cl.user_session.set("original_query", None)
+        
+        return
+
+    # ✅ Reset prior clarification state
+    cl.user_session.set("awaiting_clarification", False)
+    cl.user_session.set("clarification_rounds", 0)
+    cl.user_session.set("fuzzy_clarification_rounds", 0)
+    cl.user_session.set("possible_summaries", None)
+    cl.user_session.set("nodes_to_consider", None)
+    cl.user_session.set("summary_to_meta", None)
+    cl.user_session.set("original_query", None)
+
     retriever = cl.user_session.get("retriever")
     runnable = cl.user_session.get("runnable")
+    thread_id = cl.context.session.thread_id
+    cl.user_session.set("fuzzy_clarification_rounds", 0)
 
-    # Fuzzy match against predefined answers
+    # Step 1: Fuzzy match
     fuzzy_scores = {q: SequenceMatcher(None, message.content.lower(), q.lower()).ratio() for q in predefined_answers}
-    best_question = max(fuzzy_scores, key=fuzzy_scores.get)
-    fuzzy_score = fuzzy_scores[best_question]
-    best_match = predefined_answers[best_question]
+    fuzzy_candidates = sorted(
+        [(q, s) for q, s in fuzzy_scores.items() if s > FUZZY_THRESHOLD],
+        key=lambda x: x[1],
+        reverse=True
+    )
+    best_question, fuzzy_score = fuzzy_candidates[0] if fuzzy_candidates else ("", 0)
+    best_match = predefined_answers.get(best_question, "")
 
-    # Vector retrieval
+    # Step 2: Vector retrieval
+# Step 2: Vector retrieval
     try:
-        nodes = retriever.retrieve(message.content)
+        query_with_context = message.content
+        memory = cl.user_session.get("memory")
+        past_messages = memory.get()[-3:]  # Include last 3 turns (user + assistant)
+        context_snippets = "\n".join(f"{m.role.title()}: {m.content.strip()}" for m in past_messages if m.content.strip())
+        if context_snippets:
+            query_with_context = context_snippets + "\nUser: " + message.content
+
+        nodes = retriever.retrieve(query_with_context)
         top_score = nodes[0].score if nodes else 0.0
+        logger.info("📥 Retrieved chunks from Vector DB:")
+        for i, n in enumerate(nodes):
+            preview = n.node.text[:120].replace("\n", " ")
+            logger.info(f"  {i+1}. Title: {n.node.metadata.get('section_title', 'Unknown')} | Score: {n.score:.4f} | Preview: {preview}")
     except Exception as e:
         await send_with_feedback(f"⚠️ Retrieval error: {str(e)}")
         return
 
-    # Ambiguity check
-    scores = [n.score for n in nodes[:MAX_TOPICS_BEFORE_CLARIFY]]
-    if len(scores) >= 2 and all(abs(s - scores[0]) < SIMILARITY_TIE_THRESHOLD for s in scores) and scores[0] >= VECTOR_MIN_THRESHOLD:
-        return await start_clarification_flow(nodes, message.content)
+    # Step 3: Return predefined answer if it's stronger
+    if fuzzy_score > top_score:
+        if len(fuzzy_candidates) > 1:
+            logger.info("🔍 Multiple fuzzy matches above threshold. Triggering clarification.")
+            return await start_clarification_flow(nodes=[], original_query=message.content, fuzzy_candidates=fuzzy_candidates)
+        level = "Easy"
+        content = (
+            f"{best_match}\n\n"
+            f"🧠 *DEBUG* | Category: **Easy** | Method: **Predefined** | "
+            f"Fuzzy: {fuzzy_score:.2f} | Vector: {top_score:.2f} | Matched Q: {best_question}"
+        )
+        await send_with_feedback(content, metadata={"easy": level})
+        save_conversation_log(thread_id, message.id, "bot", best_match, level)
+        return
 
-    # Determine response level
+    # Step 3: Handle low-confidence fallback and ambiguity checks
+    import statistics
+    scores = [n.score for n in nodes[:MAX_TOPICS_BEFORE_CLARIFY]]
+
+    if fuzzy_score < FUZZY_THRESHOLD and (not scores or scores[0] < VECTOR_MIN_THRESHOLD):
+        cl.user_session.set("clarification_just_exited", True)
+        cl.user_session.set("clarification_reset_waiting", True)
+        cl.user_session.set("awaiting_clarification", False)
+        await send_with_feedback("❗ยังไม่สามารถหาคำตอบได้จากคำถามนี้ กรุณาระบุคำถามให้ชัดเจนขึ้น เช่น อ้างอิงหัวข้อหรือประเภทค่าใช้จ่าย")
+        return
+
+    vector_ambiguous = (
+        len(scores) >= 3 and scores[0] >= 0.45 and statistics.stdev(scores[:3]) < 0.007
+    )
+    fuzzy_ambiguous = len(fuzzy_candidates) > 1
+    if vector_ambiguous or fuzzy_ambiguous:
+        return await start_clarification_flow(nodes, message.content, fuzzy_candidates)
+
+    # Step 5: LLM-based answer
+    query_with_context = message.content
+    memory = cl.user_session.get("memory")
+    past_messages = memory.get()[-3:]  # Use last 3 user messages as context
+    context_snippets = "\n".join(m.content for m in past_messages if m.role == "user")
+    if context_snippets:
+        query_with_context = context_snippets + "\n" + message.content
+
     if top_score >= VECTOR_MEDIUM_THRESHOLD:
         level = "Hard"
+        await answer_with_llm(nodes, query_with_context, level, top_score, fuzzy_score)
     elif top_score >= VECTOR_MIN_THRESHOLD:
         level = "Medium"
+        await answer_with_llm(nodes, query_with_context, level, top_score, fuzzy_score)
     else:
         level = "Rejected"
-
-    # Generate response based on level
-    if level == "Rejected":
         content = (
             "❌ คำถามนี้ไม่เกี่ยวข้องกับนโยบาย LOA / DoA กรุณาถามในหัวข้อที่เกี่ยวข้อง\n\n"
             f"🧠 *DEBUG* | Category: **Rejected** | Vector: {top_score:.2f} | Fuzzy: {fuzzy_score:.2f}"
         )
-        await send_with_feedback(content, metadata={"difficulty": "Rejected"})
-        save_conversation_log(cl.context.session.thread_id, message.id, "bot", "Rejected", "Reject")
+        await send_with_feedback(content, metadata={"difficulty": level})
+        save_conversation_log(thread_id, message.id, "bot", "Rejected", level)
 
-    elif level == "Easy" and fuzzy_score > FUZZY_THRESHOLD:
-        content = (
-            f"{best_match}\n\n"
-            f"🧠 *DEBUG* | Category: **Easy** | Method: **Predefined** | Vector: {top_score:.2f} | Fuzzy: {fuzzy_score:.2f} | Matched Q: {best_question}"
-        )
-        await send_with_feedback(content, metadata={"difficulty": "Easy"})
-        save_conversation_log(cl.context.session.thread_id, message.id, "bot", best_match, "Easy")
-
-    elif level == "Medium" or level == "Hard":
-        await answer_with_llm(nodes, message.content, level, top_score, fuzzy_score)
-
-
-async def start_clarification_flow(nodes: list, original_query: str):
+async def start_clarification_flow(nodes: list, original_query: str, fuzzy_candidates: list = None):
     """Initiates the clarification process when a query is too broad."""
+    # Ensure fuzzy_clarification_rounds is initialized
+    cl.user_session.set("clarification_just_exited", False)
+    if fuzzy_candidates:
+        current_round = cl.user_session.get("fuzzy_clarification_rounds") or 0
+        cl.user_session.set("fuzzy_clarification_rounds", current_round + 1)
+        summaries = []
+        summary_to_meta = {}
+        for q, score in fuzzy_candidates[:MAX_FUZZY_CLARIFY_TOPICS]:
+            summaries.append(q)
+            summary_to_meta[q] = ("fuzzy", predefined_answers[q], score)
+            logger.info(f"🔍 Fuzzy clarification choice: {q} | Score: {score:.2f}")
+
+        opt_out_choice = "❌ ถามคำถามใหม่"
+        if opt_out_choice not in summaries:
+            summaries.append(opt_out_choice)
+
+        cl.user_session.set("awaiting_clarification", True)
+        cl.user_session.set("clarification_rounds", 0)
+        cl.user_session.set("possible_summaries", summaries)
+        cl.user_session.set("nodes_to_consider", [])  # Empty list for fuzzy
+        cl.user_session.set("summary_to_meta", summary_to_meta)
+        cl.user_session.set("original_query", original_query)
+
+        await send_with_feedback(
+            content=(
+                "❓ คำถามของคุณอาจตรงกับหัวข้อเหล่านี้\n\n"
+                + "\n".join(f"{i+1}. {s}" for i, s in enumerate(summaries))
+                + '\n\nโปรดตอบกลับด้วยหมายเลขหรือชื่อหัวข้อที่ต้องการ หรือเลือก \"❌ ถามคำถามใหม่\" หากต้องการเริ่มต้นใหม่'
+            ),
+            author="Customer Service Agent",
+        )
+        return
+
     llm = get_llm_settings(cl.user_session.get("chat_profile"))
     summaries, summary_to_meta = [], {}
 
@@ -679,18 +990,52 @@ async def start_clarification_flow(nodes: list, original_query: str):
         nodes_to_summarize = nodes[:MAX_TOPICS_BEFORE_CLARIFY]
 
     for n in nodes_to_summarize:
-        trunc = n.node.text[:1000] + "…" if len(n.node.text) > 1000 else n.node.text
-        prompt = (
-            f'ผู้ใช้ถามว่า: "{original_query}"\n'
-            f'เนื้อหาในเอกสารนี้ (เต็มข้อความ):\n"""{trunc}\n"""\n'
-            "กรุณาสรุปเนื้อหานี้เป็นหัวข้อเพื่อให้ผู้ใช้เลือก นี่คือหัวข้อย่อยที่ผู้ใช้จะเลือกเมื่อคำตอบอาจเป็นไปได้หลายกรณี เริ่มต้นประโยคด้วย กรณี เสมอ"
-        )
-        resp = llm.chat([ChatMessage(role="user", content=prompt)])
-        one_line = resp.message.content.strip().split("\n")[0]
-        if one_line not in summary_to_meta:
-            summaries.append(one_line)
-            summary_to_meta[one_line] = (n, trunc, n.node.metadata.get("source", "UnknownPolicy"))
 
+            # PREPARE BATCHED PROMPT
+        truncs = []
+        node_map = {}
+        for i, n in enumerate(nodes_to_summarize, 1):
+            trunc_text = n.node.text[:1000].strip().replace("\n", " ")
+            section_title = n.node.metadata.get("section_title", "")
+            if section_title:
+                trunc_text = f"{section_title}\n{trunc_text}"
+            truncs.append(f"({i})\n{trunc_text}")
+            node_map[str(i)] = n
+
+
+        # Add memory history
+        memory: ChatMemoryBuffer = cl.user_session.get("memory")
+        prior_messages = memory.get()
+        history_snippets = "\n".join(f"{m.role.title()}: {m.content.strip()}" for m in prior_messages if m.content.strip())
+
+        batched_prompt = (
+            f'ผู้ใช้ถามว่า: "{original_query}"\n\n'
+            f"📜 ประวัติการสนทนา:\n{history_snippets}\n\n"
+            f"ต่อไปนี้คือเนื้อหาจากหลายเอกสารที่อาจเกี่ยวข้อง:\n\n"
+            + "\n\n".join(truncs)
+            + "\n\nกรุณาสรุปแต่ละย่อหน้าเป็นหัวข้อย่อยไม่เกิน 10 คำ โดยใช้หมายเลขเดียวกับเนื้อหา เช่น (1) กรณี..., (2) กรณี..., เป็นต้น"
+        )
+
+        # CALL LLM ONCE
+        resp = llm.chat([ChatMessage(role="user", content=batched_prompt)])
+        lines = resp.message.content.strip().splitlines()
+
+        # MAP RESPONSES BACK TO NODES
+        summaries = []
+        summary_to_meta = {}
+        for line in lines:
+            match = re.match(r"\(?(\d+)\)?[\.、:]?\s*(.*)", line)
+            if match:
+                idx, summary = match.groups()
+                if idx in node_map and summary not in summary_to_meta:
+                    summaries.append(summary)
+                    summary_to_meta[summary] = (node_map[idx], node_map[idx].node.text[:1000], node_map[idx].node.metadata.get("source", "UnknownPolicy"))
+        # 🧠 Append fuzzy match questions into the clarification loop
+        for i, (question, score) in enumerate(fuzzy_candidates, 1):
+            label = f'✅ คำถามสำเร็จรูป: "{question}"'
+            if label not in summaries:
+                summaries.append(label)
+                summary_to_meta[label] = ("fuzzy", predefined_answers[question], score)
     opt_out_choice = "❌ ถามคำถามใหม่"
     if opt_out_choice not in summaries:
         summaries.append(opt_out_choice)
@@ -716,15 +1061,30 @@ async def start_clarification_flow(nodes: list, original_query: str):
         )
         await session.commit()
 
-    await send_with_feedback(
-        content=(
-            "❓ พบเอกสารหลายรายการที่อาจเกี่ยวข้องกับคำถามของคุณ\n\n"
-            "หัวข้อที่เป็นไปได้:\n"
-            + "\n".join(f"{i+1}. {s}" for i, s in enumerate(summaries))
-            + '\n\nโปรดตอบกลับด้วยหมายเลขหรือชื่อหัวข้อที่ต้องการ หรือเลือก "❌ ถามคำถามใหม่" หากต้องการเริ่มต้นใหม่'
-        ),
-        author="Customer Service Agent",
-    )
+        # 🧠 Log clarification details to terminal
+        logger.info("📌 Clarification Triggered")
+        logger.info(f"🔍 User Question: {original_query}")
+        logger.info("📑 Selected Chunks for Clarification:")
+        for i, n in enumerate(nodes_to_summarize):
+            preview = n.node.text[:120].replace("\n", " ")
+            logger.info(f"  {i+1}. Title: {n.node.metadata.get('section_title', 'Unknown')} | Score: {n.score:.4f} | Preview: {preview}")
+
+        logger.info("🧠 Clarification Choices:")
+        for i, s in enumerate(summaries):
+            logger.info(f"  {i+1}. {s}")
+            if isinstance(summary_to_meta.get(s), tuple) and summary_to_meta[s][0] == "fuzzy":
+                logger.info(f"     ↳ Predefined answer score: {summary_to_meta[s][2]:.2f}")
+
+        await send_with_feedback(
+            content=(
+                "❓ พบเอกสารหลายรายการที่อาจเกี่ยวข้องกับคำถามของคุณ\n\n"
+                "หัวข้อที่เป็นไปได้:\n"
+                + "\n".join(f"{i+1}. {s}" for i, s in enumerate(summaries))
+                + '\n\nโปรดตอบกลับด้วยหมายเลขหรือชื่อหัวข้อที่ต้องการ หรือเลือก "❌ ถามคำถามใหม่" หากต้องการเริ่มต้นใหม่'
+            ),
+            author="Customer Service Agent",
+        )
+
 
 
 async def answer_with_llm(nodes: list, query: str, level: str, top_score: float, fuzzy_score: float):
@@ -733,12 +1093,55 @@ async def answer_with_llm(nodes: list, query: str, level: str, top_score: float,
     TOP_K = 3
     selected_nodes = nodes[:TOP_K]
     contexts = [(n.node.metadata.get("source", "Unknown"), n.node.text.strip().replace("\n", " ")) for n in selected_nodes]
-    context_str = "".join(f'({i}) เอกสารนโยบาย: "{src}"\nเนื้อหาชิ้นนี้ (เต็มข้อความ):\n"""{txt}\n"""\n\n' for i, (src, txt) in enumerate(contexts, 1))
+
+    # Include top vector chunks
+    chunk_context = "".join(
+        f'({i}) เอกสารนโยบาย: "{src}"\nเนื้อหาชิ้นนี้ (เต็มข้อความ):\n"""{txt}\n"""\n\n'
+        for i, (src, txt) in enumerate(contexts, 1)
+    )
+
+    # Include prior messages (from memory)
+    memory: ChatMemoryBuffer = cl.user_session.get("memory")
+    
+
+    prior_messages = memory.get()[-5:]
+    history_snippets = ""
+    for m in prior_messages:
+        if m.role == "user":
+            history_snippets += f"👤 ผู้ใช้: {m.content.strip()}\n"
+        elif m.role == "assistant":
+            history_snippets += f"🤖 บอท: {m.content.strip()}\n"
+
+    logger.info("🧠 Chat Memory Used in Prompt:")
+    for m in prior_messages:
+        logger.info(f"{m.role}: {m.content.strip()}")
+
+    # Compose final context
+    context_str = (
+        f"📜 ประวัติการสนทนา:\n{history_snippets}\n\n"
+        f"📚 ข้อความจากเอกสาร:\n{chunk_context}"
+    )
+
+    # Dynamically detect if response should be table-like
+    suggest_table = any(
+        "20 ล้านบาท" in txt or "500,000 บาท" in txt or "ประเภทที่" in txt or "โครงการ" in txt
+        for _, txt in contexts
+    )
+
+    formatting_hint = ""
+
+    if suggest_table:
+        formatting_hint = (
+            "\n🔶 คำแนะนำสำคัญ: กรุณาสรุปคำตอบในรูปแบบ **ตาราง Markdown** โดยระบุหัวข้อหลักเช่น 'ประเภทโครงการ', 'มูลค่า', 'เอกสารที่ต้องจัดทำ', และ 'ผู้มีอำนาจอนุมัติ' "
+            "หากไม่สามารถจัดตารางได้ ให้สรุปในรูปแบบ bullet โดยอิงเนื้อหาด้านล่าง"
+        )
+    else:
+        formatting_hint = "\nหากเหมาะสม ให้จัดคำตอบในรูปแบบ bullet หรือย่อหน้าเพื่อความเข้าใจง่าย"
 
     filtered_query = (
         f'ผู้ใช้ถามว่า: "{query}"\n\n'
         f"กรุณาตอบโดยอาศัยเนื้อหาต่อไปนี้ทั้งหมด:\n\n{context_str}"
-        "ในคำตอบให้ระบุชื่อเอกสารนโยบายที่ใช้ และชี้ว่าอ้างอิงมาจากข้อความใดบ้าง"
+        f"{formatting_hint}\nในคำตอบให้ระบุชื่อเอกสารนโยบายที่ใช้ และชี้ว่าอ้างอิงมาจากข้อความใดบ้าง"
     )
 
     try:
@@ -749,15 +1152,33 @@ async def answer_with_llm(nodes: list, query: str, level: str, top_score: float,
 
     answer_body = extract_and_format_table(answer_body)
     sources_used = ", ".join(f'"{src}"' for src, _ in contexts)
+# ✅ Render clean markdown table without code block
+    if "|" in answer_body and "---" in answer_body:
+        answer_body = f"**คำตอบ**\n\n{answer_body.strip()}"
+
     final_answer = (
-        f"📚 จากเอกสารนโยบาย: {sources_used}\n\n{answer_body}\n\n"
+        f"{answer_body}\n\n"
         f"🧠 *DEBUG* | Category: **{level}** | Method: **VectorStore + LLM (top {TOP_K})** | Vector: {top_score:.2f} | Fuzzy: {fuzzy_score:.2f}"
     )
-
+    memory.put(ChatMessage(role="assistant", content=answer_body))
     await send_with_feedback(final_answer, metadata={"difficulty": level})
     save_conversation_log(cl.context.session.thread_id, cl.context.session.id, "bot", final_answer, level)
 
+    # Detect if user query is about a form
+    form_keywords = ["ฟอร์ม", "แบบฟอร์ม", "form", "แนบ", "กรอก", "template", "request form"]
+    query_is_form_related = any(k in query.lower() for k in form_keywords)
 
+    # Search for links in the top-k contexts
+    form_links = set()
+    for n in selected_nodes:
+        link = n.node.metadata.get("attachment_link")
+        if link:
+            form_links.add(link)
+
+    # Append form link section if applicable
+    form_links_text = ""
+    if query_is_form_related and form_links:
+        form_links_text = "\n\n📎 แนบลิงก์แบบฟอร์มหรือเอกสารที่เกี่ยวข้อง:\n" + "\n".join(f"- {url}" for url in form_links)
 # ======================================================================================
 # Background Tasks (Admin Replies)
 # ======================================================================================
