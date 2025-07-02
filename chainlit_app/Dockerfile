@@ -14,7 +14,7 @@ RUN pip install psycopg2-binary asyncpg
 
 # Make port 8000 available to the world outside this container
 EXPOSE 8010
-ENV CHAINLIT_ROOT_PATH=/compliance/chat
+# ENV CHAINLIT_ROOT_PATH=/compliance/chat
 
 # Run main.py when the container launches
 # Dockerfile
