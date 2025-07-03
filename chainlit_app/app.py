@@ -186,13 +186,13 @@ CHAT_PROFILES = {
         "context_prompt": SYSTEM_PROMPT_STANDARD,
         "welcome_message": "Hi there! Need help with accounting compliance?",
         "llm_settings": {
-            "model": GROQ_MODEL_ID_2,
-            #"api_base": LLM_BASE_URL,
-            "api_key": GROQ_API_KEY,
+            "model": LLM_MODEL_ID,
+            "api_base": LLM_BASE_URL,
+            "api_key": API_KEY_CHATBOT,
             "is_chat_model": True,
             "is_function_calling_model": False,
             "temperature": 0.2,
-            #"http_client": httpx.Client(verify=False),
+            "http_client": httpx.Client(verify=False),
         },
     },
 }
@@ -313,9 +313,9 @@ def get_llm_settings(chat_profile: str):
     if not settings:
         raise ValueError(f"No LLM settings found for profile: {chat_profile}")
 
-    if chat_profile == "Accounting Compliance 2":
+    if chat_profile == "Accounting Compliance":
         return OpenAILike(**settings)
-    elif chat_profile == "Accounting Compliance":
+    elif chat_profile == "Deepthink":
         return Groq(**settings)
     else:
         raise ValueError(f"Unsupported chat profile: {chat_profile}")
