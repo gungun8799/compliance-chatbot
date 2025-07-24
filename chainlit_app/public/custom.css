@@ -1,3 +1,24 @@
+/* Hide watermark */
 .watermark {
-    display: none !important;
+  display: none !important;
+}
+
+/* Remove grayscale filter from login background */
+@media (prefers-color-scheme: dark) {
+  .login-bg,
+  .absolute.inset-0.h-full.w-full.object-cover,
+  img[class*="object-cover"] {
+    filter: none !important;
+    -webkit-filter: none !important;
+  }
+}
+
+/* Also target light theme */
+@media (prefers-color-scheme: light) {
+  .login-bg,
+  .absolute.inset-0.h-full.w-full.object-cover,
+  img[class*="object-cover"] {
+    filter: none !important;
+    -webkit-filter: none !important;
+  }
 }
