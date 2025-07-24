@@ -158,12 +158,11 @@ BU_DOCUMENT_MAP = {
 }
 
 # Redis Client
-parsed_redis_url = urlparse(REDIS_CHATSTORE_URI)
-redis_client = redis.Redis(
-    host=parsed_redis_url.hostname,
-    port=parsed_redis_url.port or 6379,
-    password=REDIS_CHATSTORE_PASSWORD,
-    db=0,
+
+# Use TLS-enabled URL directly
+redis_client = redis.Redis.from_url(
+    REDIS_CHATSTORE_URI,
+    decode_responses=True  # Optional: returns strings instead of bytes
 )
 
 # Phoenix Tracer
