@@ -471,6 +471,8 @@ def get_data_layer():
     logger.info("🔧 Initializing SQLAlchemyDataLayer with: %s", conn_url)
     return SQLAlchemyDataLayer(conninfo=conn_url)
 
+cl.set_data_layer(get_data_layer())
+
 def get_llm_settings(chat_profile: str):
     """Retrieves and configures LLM settings for a given chat profile."""
     settings = CHAT_PROFILES.get(chat_profile, {}).get("llm_settings")
