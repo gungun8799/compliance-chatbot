@@ -464,8 +464,12 @@ async def send_with_feedback(
 @cl.data_layer
 def get_data_layer():
     """Returns the SQLAlchemy data layer."""
-    return SQLAlchemyDataLayer(conninfo=os.environ["ASYNC_DATABASE_URL"])
+    conn_url = os.environ.get("ASYNC_DATABASE_URL")
+    if not conn_url:
+        raise ValueError("❌ ASYNC_DATABASE_URL is not set in environment variables!")
 
+    logger.info("🔧 Initializing SQLAlchemyDataLayer with: %s", conn_url)
+    return SQLAlchemyDataLayer(conninfo=conn_url)
 
 def get_llm_settings(chat_profile: str):
     """Retrieves and configures LLM settings for a given chat profile."""
