@@ -1029,18 +1029,16 @@ async def set_starters():
         cl.Starter(label="เมื่อไรต้องเปิด PR ผ่านระบบ เมื่อไรสามารถใช้ PO manual (PO กระดาษได้)", message="เมื่อไรต้องเปิด PR ผ่านระบบ เมื่อไรสามารถใช้ PO manual (PO กระดาษได้)", icon="/public/star.svg"),
     ]
 
-@cl.on_user_login
-async def on_user_login(user: cl.User):
-    """Sets user identifier so feedback and memory tracking works after login."""
-    cl.user_session.user_identifier = user.identifier
-    cl.user_session.set("user", user)
-    logger.info(f"🔐 User logged in: {user.identifier}")
-    return True
 
 @cl.on_chat_start
 async def on_chat_start():
     """Initializes the chat session."""
     logger.info(f"💬 on_chat_start called for user: {cl.user_session.get('user')}")
+
+    # 🛡️ Ensure user exists if login was skipped or logout occurred
+    if not cl.user_session.get("user"):
+        cl.user_session.set("user", cl.User(identifier="guest"))
+
     thread_id = cl.context.session.thread_id
     dl: SQLAlchemyDataLayer = get_data_layer()
     engine = dl.engine
@@ -1054,7 +1052,7 @@ async def on_chat_start():
 
     # Setup memory and runnable
     app_user = cl.user_session.get("user")
-    redis_session_id = f"{cl.user_session.user_identifier}:{thread_id}"
+    redis_session_id = f"{app_user.identifier}:{thread_id}"
     memory = ChatMemoryBuffer.from_defaults(
         token_limit=TOKEN_LIMIT, chat_store=chat_store, chat_store_key=redis_session_id
     )
