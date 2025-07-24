@@ -1029,6 +1029,13 @@ async def set_starters():
         cl.Starter(label="เมื่อไรต้องเปิด PR ผ่านระบบ เมื่อไรสามารถใช้ PO manual (PO กระดาษได้)", message="เมื่อไรต้องเปิด PR ผ่านระบบ เมื่อไรสามารถใช้ PO manual (PO กระดาษได้)", icon="/public/star.svg"),
     ]
 
+@cl.on_user_login
+async def on_user_login(user: cl.User):
+    """Sets user identifier so feedback and memory tracking works after login."""
+    cl.user_session.user_identifier = user.identifier
+    cl.user_session.set("user", user)
+    logger.info(f"🔐 User logged in: {user.identifier}")
+    return True
 
 @cl.on_chat_start
 async def on_chat_start():
@@ -1047,44 +1054,7 @@ async def on_chat_start():
 
     # Setup memory and runnable
     app_user = cl.user_session.get("user")
-    redis_session_id = f"{app_user.identifier}:{thread_id}"
-    memory = ChatMemoryBuffer.from_defaults(
-        token_limit=TOKEN_LIMIT, chat_store=chat_store, chat_store_key=redis_session_id
-    )
-    cl.user_session.set("memory", memory)
-    setup_runnable()
-
-    chat_profile = cl.user_session.get("chat_profile")
-    if chat_profile:
-        llm_model = CHAT_PROFILES.get(chat_profile, {}).get("llm_settings", {}).get("model")
-        logger.info(f"Chat started with profile: '{chat_profile}', LLM Model ID: '{llm_model}'")
-
-    # ✅ Clear clarification state on new chat start
-    clear_clarification_state()
-
-    logger.info("🚀 on_chat_start triggered")
-    
-    await ask_business_unit()
-
-
-@cl.on_chat_start
-async def on_chat_start():
-    """Initializes the chat session."""
-    logger.info(f"💬 on_chat_start called for user: {cl.user_session.get('user')}")
-    thread_id = cl.context.session.thread_id
-    dl: SQLAlchemyDataLayer = get_data_layer()
-    engine = dl.engine
-
-    # Persist thread row
-    meta = MetaData()
-    threads_table = Table("threads", meta, Column("id", PG_UUID(as_uuid=True), primary_key=True))
-    thread_uuid = uuid.UUID(thread_id)
-    async with engine.begin() as conn:
-        await conn.execute(pg_insert(threads_table).values(id=thread_uuid).on_conflict_do_nothing())
-
-    # Setup memory and runnable
-    app_user = cl.user_session.get("user")
-    redis_session_id = f"{app_user.identifier}:{thread_id}"
+    redis_session_id = f"{cl.user_session.user_identifier}:{thread_id}"
     memory = ChatMemoryBuffer.from_defaults(
         token_limit=TOKEN_LIMIT, chat_store=chat_store, chat_store_key=redis_session_id
     )
@@ -1098,11 +1068,14 @@ async def on_chat_start():
         "clarification_candidates": [],
         "selected_clarification": None,
         "question_count": 0,
-        "current_bu": None  # Optional: reset BU
+        "current_bu": None
     })
 
+    # ✅ Clear clarification state
+    clear_clarification_state()
+
     logger.info("🚀 on_chat_start triggered")
-    
+
     await ask_business_unit()
 
 
