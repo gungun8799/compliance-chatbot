@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict, Optional
 from urllib.parse import urlparse
 from typing import List
+from collections import defaultdict
 
 
 import chainlit as cl
@@ -1538,6 +1539,10 @@ async def show_h1_options(message):
 
 
 async def handle_standard_query(message: cl.Message):
+    import re
+    from collections import defaultdict
+    from difflib import SequenceMatcher
+    import statistics
     current_q = message.content.strip()
 
     # ─── Ensure memory ──────────────────────────────────────────
@@ -1720,6 +1725,7 @@ async def handle_standard_query(message: cl.Message):
 
         else:
             # Fallback: run original multi-doc selection logic
+           
             doc_scores = defaultdict(float)
             for n in all_nodes:
                 src = n.node.metadata.get("source", "Unknown")
