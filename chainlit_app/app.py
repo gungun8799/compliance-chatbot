@@ -143,7 +143,7 @@ BU_DOCUMENT_MAP = {
         "Policy FAQ.docx"
     ],
     "ลูกค้า B2B": [
-        "การจัดการสินเชื่อสำหรับธุรกิจ B2B.docx",
+        "การบริหารสินเชื่อสำหรับธุรกิจ B2B.docx",
         "Policy FAQ.docx",
         "B2B Others.docx"
     ],
@@ -573,6 +573,13 @@ async def answer_from_node(node_or_nodes, user_q):
     """Builds and sends the final LLM response from one or more selected nodes with a loading animation."""
     clear_clarification_state()
     cl.user_session.set("awaiting_clarification", False)
+    memory = cl.user_session.get("memory")
+    chat_history = ""
+    if memory:
+        recent_messages = memory.get()[-6:]  # ✅ Get last 3 messages only
+        for msg in recent_messages:
+            role = "👤 ผู้ใช้" if msg.role == "user" else "🤖 ผู้ช่วย"
+            chat_history += f"{role}: {msg.content.strip()}\n"
 
     orig_q = cl.user_session.get("original_user_question")
     runnable = cl.user_session.get("runnable")
@@ -610,7 +617,8 @@ async def answer_from_node(node_or_nodes, user_q):
 
     # Build the LLM prompt using selection path
     prompt = (
-        f'ผู้ใช้ถามว่า: "{orig_q}"\n\n'
+        f"📜 ประวัติการสนทนา:\n{chat_history}\n\n"
+        f'📌 คำถามหลักจากผู้ใช้: "{orig_q}"\n\n'
         f'🧭 เส้นทางการเลือกหัวข้อของผู้ใช้:\n{path_history_str}\n\n'
         f'📚 หัวข้อที่เกี่ยวข้อง: {section_str}\n'
         f'📄 เอกสารนโยบาย: "{source}"\n\n'
@@ -1034,65 +1042,32 @@ async def set_starters():
 @cl.on_chat_start
 async def on_chat_start():
     """Initializes the chat session."""
-    logger.info(f"💬 on_chat_start called for user: {cl.user_session.get('user')}")
+    user = cl.user_session.get("user")
     thread_id = cl.context.session.thread_id
+    logger.info(f"💬 on_chat_start called for user: {user}")
+
+    # ─── Persist thread row ─────────────────────────────────────
     dl: SQLAlchemyDataLayer = get_data_layer()
     engine = dl.engine
-
-    # Persist thread row
     meta = MetaData()
     threads_table = Table("threads", meta, Column("id", PG_UUID(as_uuid=True), primary_key=True))
     thread_uuid = uuid.UUID(thread_id)
     async with engine.begin() as conn:
-        await conn.execute(pg_insert(threads_table).values(id=thread_uuid).on_conflict_do_nothing())
+        await conn.execute(
+            pg_insert(threads_table).values(id=thread_uuid).on_conflict_do_nothing()
+        )
 
-    # Setup memory and runnable
-    app_user = cl.user_session.get("user")
-    redis_session_id = f"{app_user.identifier}:{thread_id}"
+    # ─── Setup memory ───────────────────────────────────────────
+    redis_session_id = f"{user.identifier}:{thread_id}"
     memory = ChatMemoryBuffer.from_defaults(
         token_limit=TOKEN_LIMIT, chat_store=chat_store, chat_store_key=redis_session_id
     )
     cl.user_session.set("memory", memory)
+
+    # ─── Setup runnable ─────────────────────────────────────────
     setup_runnable()
 
-    chat_profile = cl.user_session.get("chat_profile")
-    if chat_profile:
-        llm_model = CHAT_PROFILES.get(chat_profile, {}).get("llm_settings", {}).get("model")
-        logger.info(f"Chat started with profile: '{chat_profile}', LLM Model ID: '{llm_model}'")
-
-    # ✅ Clear clarification state on new chat start
-    clear_clarification_state()
-
-    logger.info("🚀 on_chat_start triggered")
-    
-    await ask_business_unit()
-
-
-@cl.on_chat_start
-async def on_chat_start():
-    """Initializes the chat session."""
-    logger.info(f"💬 on_chat_start called for user: {cl.user_session.get('user')}")
-    thread_id = cl.context.session.thread_id
-    dl: SQLAlchemyDataLayer = get_data_layer()
-    engine = dl.engine
-
-    # Persist thread row
-    meta = MetaData()
-    threads_table = Table("threads", meta, Column("id", PG_UUID(as_uuid=True), primary_key=True))
-    thread_uuid = uuid.UUID(thread_id)
-    async with engine.begin() as conn:
-        await conn.execute(pg_insert(threads_table).values(id=thread_uuid).on_conflict_do_nothing())
-
-    # Setup memory and runnable
-    app_user = cl.user_session.get("user")
-    redis_session_id = f"{app_user.identifier}:{thread_id}"
-    memory = ChatMemoryBuffer.from_defaults(
-        token_limit=TOKEN_LIMIT, chat_store=chat_store, chat_store_key=redis_session_id
-    )
-    cl.user_session.set("memory", memory)
-    setup_runnable()
-
-    # ✅ Reset chat profile state
+    # ─── Reset chat profile state (merged from second block) ───
     cl.user_session.set("chat_profile", {
         "name": "default",
         "clarify_state": None,
@@ -1102,8 +1077,28 @@ async def on_chat_start():
         "current_bu": None  # Optional: reset BU
     })
 
+    # ─── Initialize and store structured chat profile ─────────────
+    chat_profile = {
+        "name": "default",
+        "clarify_state": None,
+        "clarification_candidates": [],
+        "selected_clarification": None,
+        "question_count": 0,
+        "current_bu": None  # Optional: reset BU
+    }
+    cl.user_session.set("chat_profile", chat_profile)
+
+    # ─── Optionally log LLM model if profile name is valid ────────
+    profile_name = chat_profile["name"]
+    llm_model = CHAT_PROFILES.get(profile_name, {}).get("llm_settings", {}).get("model")
+    logger.info(f"Chat started with profile: '{profile_name}', LLM Model ID: '{llm_model}'")
+
+    # ─── Clear clarification state ────────────────────────────────
+    clear_clarification_state()
+
     logger.info("🚀 on_chat_start triggered")
-    
+
+    # ─── Ask BU as first step ─────────────────────────────────────
     await ask_business_unit()
 
 
@@ -1130,15 +1125,22 @@ async def on_message(message: cl.Message):
 
     # ✅ Append new message to memory
     # ✅ Only log raw user input if not in clarification mode
-    if not cl.user_session.get("awaiting_clarification"):
-        memory.put(ChatMessage(role="user", content=text))
-        logger.info(f"✅ Appended to memory: {text}")
+    # ✅ Always append user message to memory (unless it's a reset trigger)
+    awaiting_clarification = cl.user_session.get("awaiting_clarification", False)
 
-    # ✅ Log updated memory state
-    logger.info("🧠 Memory after appending new user message:")
-    for i, msg in enumerate(memory.get()):
-        logger.info(f"[{i}] {msg.role.upper()}: {msg.content}")
-    
+    if awaiting_clarification:
+        logger.info("⚠️ Skipping raw input from memory due to clarification mode.")
+    else:
+        if text not in ("0", "❌ ถามคำถามใหม่"):
+            memory.put(ChatMessage(role="user", content=text))
+            logger.info(f"✅ Appended to memory: {text}")
+            logger.info(f"🧠 Memory object ID: {id(memory)}")
+
+            # ✅ Log updated memory state only after appending
+            logger.info("🧠 Memory after appending new user message:")
+            for i, msg in enumerate(memory.get()):
+                logger.info(f"[{i}] {msg.role.upper()}: {msg.content}")
+    logger.info(f"🧠 Memory object ID: {id(memory)}")
     
     if cl.user_session.get("selected_bu") is None and not cl.user_session.get("awaiting_bu_selection"):
         logger.info("💡 First user message with no BU selected → ask for BU")
@@ -1536,21 +1538,33 @@ async def show_h1_options(message):
 
 
 async def handle_standard_query(message: cl.Message):
-    """Handles a standard, non-clarification query with hierarchical clarification."""
-
-    import re
-    from collections import defaultdict
-    from difflib import SequenceMatcher
-    import statistics
-    # At the top of handle_standard_query
-    memory = cl.user_session.get("memory")
-    if memory:
-        memory.put(ChatMessage(role="user", content=message.content))
-        logger.info("🧠 Memory after input:")
-        for m in memory.get():
-            logger.info(f"{m.role}: {m.content}")
     current_q = message.content.strip()
-    prev_q    = cl.user_session.get("pre_drill_query")
+
+    # ─── Ensure memory ──────────────────────────────────────────
+    memory = cl.user_session.get("memory")
+    if not memory:
+        logger.warning("⚠️ Memory not found. Initializing fallback.")
+        user = cl.user_session.get("user")
+        thread_id = cl.context.session.thread_id
+        redis_session_id = f"{user.identifier}:{thread_id}"
+        memory = ChatMemoryBuffer.from_defaults(
+            token_limit=TOKEN_LIMIT,
+            chat_store=chat_store,
+            chat_store_key=redis_session_id
+        )
+        cl.user_session.set("memory", memory)
+
+
+
+    # ─── Add user message to memory ─────────────────────────────
+    # memory.put(ChatMessage(role="user", content=current_q))
+    logger.info("🧠 Memory after input:")
+    for m in memory.get():
+        logger.info(f"{m.role}: {m.content}")
+    logger.info(f"🧠 Memory object ID: {id(memory)}")
+
+    # ─── Restore clarification vars ─────────────────────────────
+    prev_q = cl.user_session.get("pre_drill_query")
     original_q = current_q
     orig_q = current_q
 
@@ -1605,18 +1619,6 @@ async def handle_standard_query(message: cl.Message):
 
     
      # ─── 11) Fuzzy-fallback & final LLM answer ─────────────────────────────────
-    # compute how close we are to any of your canned Q→A
-    fuzzy_scores = {
-        q: SequenceMatcher(None, current_q.lower(), q.lower()).ratio()
-        for q in predefined_answers
-    }
-    best_q, fuzzy_score = max(fuzzy_scores.items(), key=lambda kv: kv[1], default=("", 0.0))
-
-    if fuzzy_score >= FUZZY_THRESHOLD:
-        logger.info(f"✅ Fuzzy override: “{current_q}” ≈ “{best_q}” ({fuzzy_score:.2f}) → predefined answer")
-        await send_with_feedback(predefined_answers[best_q], author="Customer Service Agent")
-        return
-    
         # ─── 4) Prepare retrieval █────────────────────────────────────
     retriever = cl.user_session.get("retriever")
     thread_id = cl.context.session.thread_id
@@ -2014,7 +2016,7 @@ async def handle_standard_query(message: cl.Message):
                     n.score,
                     snippet[:200]
                 )
-
+            from difflib import SequenceMatcher
             # Fuzzy fallback
             name_pattern = r"^[A-Za-zก-๙]+(?:\s+[A-Za-zก-๙]+)+$"
             if re.fullmatch(name_pattern, message.content.strip()):
@@ -2720,11 +2722,13 @@ async def answer_with_llm(nodes: list, query: str, level: str, top_score: float,
     )
 
     filtered_query = (
-        f'ผู้ใช้ถามว่า: "{query}"\n\n'
-        f"กรุณาตอบโดยอาศัยเนื้อหาต่อไปนี้ทั้งหมด:\n\n{context_str}"
+        f'คำถามจากผู้ใช้งาน: "{query}"\n\n'
+        "กรุณาจัดทำคำตอบโดยอ้างอิงจากเนื้อหาทั้งหมดที่ให้ไว้ด้านล่างนี้อย่างครบถ้วนและถูกต้อง:\n\n"
+        f"{context_str}"
         f"{formatting_hint}"
         f"{constraint}\n\n"
-        "ในคำตอบให้ระบุชื่อเอกสารนโยบายที่ใช้ ... ถ้าไม่แน่ใจให้ถามกลับ"
+        "โปรดให้คำตอบอย่างชัดเจน ถูกต้อง และเป็นทางการ โดยระบุชื่อเอกสารนโยบายหรือแหล่งอ้างอิงที่ใช้ในการตอบทุกครั้ง\n"
+        "หากไม่พบข้อมูลเพียงพอในเนื้อหาที่ให้ไว้ หรือมีความไม่แน่ใจ กรุณาตอบกลับเพื่อขอข้อมูลเพิ่มเติมจากผู้ใช้งานก่อนตอบ"
     )
 
     # ─── Start the thinking animation ───
