@@ -158,11 +158,12 @@ BU_DOCUMENT_MAP = {
 }
 
 # Redis Client
-
-# Use TLS-enabled URL directly
-redis_client = redis.Redis.from_url(
-    REDIS_CHATSTORE_URI,
-    decode_responses=True  # Optional: returns strings instead of bytes
+parsed_redis_url = urlparse(REDIS_CHATSTORE_URI)
+redis_client = redis.Redis(
+    host=parsed_redis_url.hostname,
+    port=parsed_redis_url.port or 6379,
+    password=REDIS_CHATSTORE_PASSWORD,
+    db=0,
 )
 
 # Phoenix Tracer
@@ -464,12 +465,7 @@ async def send_with_feedback(
 @cl.data_layer
 def get_data_layer():
     """Returns the SQLAlchemy data layer."""
-    conn_url = os.environ.get("ASYNC_DATABASE_URL")
-    if not conn_url:
-        raise ValueError("❌ ASYNC_DATABASE_URL is not set in environment variables!")
-
-    logger.info("🔧 Initializing SQLAlchemyDataLayer with: %s", conn_url)
-    return SQLAlchemyDataLayer(conninfo=conn_url)
+    return SQLAlchemyDataLayer(conninfo=os.environ["ASYNC_DATABASE_URL"])
 
 
 def get_llm_settings(chat_profile: str):
@@ -1039,11 +1035,43 @@ async def set_starters():
 async def on_chat_start():
     """Initializes the chat session."""
     logger.info(f"💬 on_chat_start called for user: {cl.user_session.get('user')}")
+    thread_id = cl.context.session.thread_id
+    dl: SQLAlchemyDataLayer = get_data_layer()
+    engine = dl.engine
 
-    # 🛡️ Ensure user exists if login was skipped or logout occurred
-    if not cl.user_session.get("user"):
-        cl.user_session.set("user", cl.User(identifier="guest"))
+    # Persist thread row
+    meta = MetaData()
+    threads_table = Table("threads", meta, Column("id", PG_UUID(as_uuid=True), primary_key=True))
+    thread_uuid = uuid.UUID(thread_id)
+    async with engine.begin() as conn:
+        await conn.execute(pg_insert(threads_table).values(id=thread_uuid).on_conflict_do_nothing())
 
+    # Setup memory and runnable
+    app_user = cl.user_session.get("user")
+    redis_session_id = f"{app_user.identifier}:{thread_id}"
+    memory = ChatMemoryBuffer.from_defaults(
+        token_limit=TOKEN_LIMIT, chat_store=chat_store, chat_store_key=redis_session_id
+    )
+    cl.user_session.set("memory", memory)
+    setup_runnable()
+
+    chat_profile = cl.user_session.get("chat_profile")
+    if chat_profile:
+        llm_model = CHAT_PROFILES.get(chat_profile, {}).get("llm_settings", {}).get("model")
+        logger.info(f"Chat started with profile: '{chat_profile}', LLM Model ID: '{llm_model}'")
+
+    # ✅ Clear clarification state on new chat start
+    clear_clarification_state()
+
+    logger.info("🚀 on_chat_start triggered")
+    
+    await ask_business_unit()
+
+
+@cl.on_chat_start
+async def on_chat_start():
+    """Initializes the chat session."""
+    logger.info(f"💬 on_chat_start called for user: {cl.user_session.get('user')}")
     thread_id = cl.context.session.thread_id
     dl: SQLAlchemyDataLayer = get_data_layer()
     engine = dl.engine
@@ -1071,14 +1099,11 @@ async def on_chat_start():
         "clarification_candidates": [],
         "selected_clarification": None,
         "question_count": 0,
-        "current_bu": None
+        "current_bu": None  # Optional: reset BU
     })
 
-    # ✅ Clear clarification state
-    clear_clarification_state()
-
     logger.info("🚀 on_chat_start triggered")
-
+    
     await ask_business_unit()
 
 
