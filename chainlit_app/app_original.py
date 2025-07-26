@@ -46,6 +46,7 @@ from llama_index.core import VectorStoreIndex, StorageContext
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 
+
 from functions.qdrant_vectordb import QdrantManager
 # Apply the monkey patch
 from patches import patch
@@ -93,6 +94,7 @@ TRACE_ENDPOINT = os.getenv("TRACE_ENDPOINT")
 TRACE_PROJECT_NAME = os.getenv("TRACE_PROJECT_NAME")
 MS_TEAMS_WORKFLOW_URL = os.getenv("MS_TEAMS_WORKFLOW_URL")
 CHAINLIT_AUTH_SECRET = os.getenv("CHAINLIT_AUTH_SECRET")
+SELECTION_PATH_KEY = "selection_path"
 
 logger.info(f"📡 MS_TEAMS_WORKFLOW_URL: {MS_TEAMS_WORKFLOW_URL}")
 logger.info(f"✅ Loaded CHAINLIT_AUTH_SECRET: {CHAINLIT_AUTH_SECRET}")
@@ -104,10 +106,10 @@ MAX_FUZZY_CLARIFICATION_ROUNDS = 3
 MAX_TOPICS_BEFORE_CLARIFY = 7
 MAX_FUZZY_CLARIFY_TOPICS = 5
 SIMILARITY_TIE_THRESHOLD = 0.03
-FUZZY_THRESHOLD = 0.55
+FUZZY_THRESHOLD = 1.55
 FUZZY_CLARIFY_THRESHOLD = 0.85  # 👈 triggers clarification when multiple fuzzy candidates exist
 VECTOR_MIN_THRESHOLD = 0.3
-VECTOR_MEDIUM_THRESHOLD = 0.6
+VECTOR_MEDIUM_THRESHOLD = 0.56
 CONTEXT_WINDOW = 12000
 DEFAULT_CLARIFICATION_LEVEL = 5
 # Pre-drill keys
@@ -116,14 +118,51 @@ AWAITING_PRE_DRILL  = "awaiting_pre_drill"
 PRE_DRILL_QUERY     = "pre_drill_query"
 PRE_DRILL_NODES     = "pre_drill_nodes"
 DOC_CHOICES_KEY     = "doc_choices"
+# Business Unit pre-drill key
+SELECTED_BUSINESS_UNIT = "selected_bu"
+
+
+BU_DOCUMENT_MAP = {
+    "อำนาจอนุมัติ DoA / LoA การอนุมัติโครงการ และค่าใช้จ่าย": [
+        "อำนาจอนุมัติ DoA และ LoA.docx",
+        "เงินลงทุนในโครงการ.docx",
+        "อำนาจอนุมัติรายจ่ายทั่วไป.docx",
+        "การเบิกค่าใช้จ่ายพนักงาน.docx",
+        "Policy FAQ.docx"
+    ],
+    "คู่ค้าซื้อมาขายไป (Commercial / Trade Supplier)": [
+        "การเพิ่มข้อมูลคู่ค้า และการจ่ายเงิน (Trade).docx",
+        "Policy FAQ.docx"
+    ],
+    "คู่ค้าอื่นๆ (Procurement / Non-Trade Supplier)": [
+        "การเพิ่มและแก้ไขข้อมูลคู่ค้า (Non-trade).docx",
+        "Policy FAQ.docx"
+    ],
+    "ลูกค้าผู้เช่าพื้นที่ (Mall / Tenant)": [
+        "การเพิ่ม คัดเลือกลูกค้า การต่อสัญญา และการติดตามหนี้.docx",
+        "Policy FAQ.docx"
+    ],
+    "ลูกค้า B2B": [
+        "การจัดการสินเชื่อสำหรับธุรกิจ B2B.docx",
+        "Policy FAQ.docx",
+        "B2B Others.docx"
+    ],
+    "ลูกหนี้อื่นๆ (AR Others / AR non-mall)": [
+        "การเพิ่มและแก้ไขข้อมูลคู่ค้า (Non-trade).docx",
+        "Policy FAQ.docx"
+    ],
+    "สินทรัพย์ (Asset)": [
+        "FA-G-13 - Asset management policy.docx",
+        "Policy FAQ.docx"
+    ]
+}
 
 # Redis Client
-parsed_redis_url = urlparse(REDIS_CHATSTORE_URI)
-redis_client = redis.Redis(
-    host=parsed_redis_url.hostname,
-    port=parsed_redis_url.port or 6379,
-    password=REDIS_CHATSTORE_PASSWORD,
-    db=0,
+
+# Use TLS-enabled URL directly
+redis_client = redis.Redis.from_url(
+    REDIS_CHATSTORE_URI,
+    decode_responses=True  # Optional: returns strings instead of bytes
 )
 
 # Phoenix Tracer
@@ -201,9 +240,9 @@ CHAT_PROFILES = {
         "context_prompt": SYSTEM_PROMPT_STANDARD,
         "welcome_message": "Hi there! Need help with accounting compliance?",
         "llm_settings": {
-            "model": "mistralai/mistral-small-3.2-24b-instruct",
-            "api_base": "https://openrouter.ai/api/v1",
-            "api_key": "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",
+            "model": "default",
+            "api_base": "https://api-cpxis.lotuss.com/llm/v1",
+            "api_key": "finance.lotuss.E9DD48B6C26A276CF48CDBC4D7468",
             "is_chat_model": True,
             "is_function_calling_model": False,
             "temperature": 0.2,
@@ -212,7 +251,6 @@ CHAT_PROFILES = {
     },
 }
 
-# ─── Add this helper at the top of your file ───
 async def send_animated_message(
     base_msg: str,
     frames: list,
@@ -238,6 +276,22 @@ async def send_animated_message(
         # Final static display when the task is cancelled
         msg.content = base_msg
         await msg.update()
+
+async def ask_business_unit():
+    logger.info("🟡 Triggering BU selection prompt")
+    business_units = [
+    "อำนาจอนุมัติ DoA / LoA การอนุมัติโครงการ และค่าใช้จ่าย",
+    "คู่ค้าซื้อมาขายไป (Commercial / Trade Supplier)",
+    "คู่ค้าอื่นๆ (Procurement / Non-Trade Supplier)",
+    "ลูกค้าผู้เช่าพื้นที่ (Mall / Tenant)",
+    "ลูกค้า B2B",
+    "ลูกหนี้อื่นๆ (AR Others / AR non-mall)",
+    "สินทรัพย์ (Asset)"
+    ]
+    options = "\n".join(f"{i+1}. {bu}" for i, bu in enumerate(business_units))
+    cl.user_session.set("awaiting_bu_selection", True)
+    cl.user_session.set("business_units", business_units)
+    await cl.Message(content="กรุณาเลือก Business Group ที่เกี่ยวข้องกับคำถามของคุณ:\n\n" + options).send()
         
 # ✅ Add this for on-demand manual retrieval testing
 def manual_retrieve(query: str, top_k=5):
@@ -256,10 +310,23 @@ def manual_retrieve(query: str, top_k=5):
     index = VectorStoreIndex.from_vector_store(vector_store)
 
     retriever = index.as_retriever(similarity_top_k=top_k)
-    nodes = retriever.retrieve(query)
-    # หลังเรียก nodes = retriever.retrieve(query_with_context)
+    nodes = retriever.retrieve(query_with_context)
+    selected_bu = cl.user_session.get("selected_bu")
+    allowed_docs = BU_DOCUMENT_MAP.get(selected_bu, [])
+    nodes = [n for n in nodes if n.node.metadata.get("source") in allowed_docs]
+    logger.info(f"📁 Filtered {len(nodes)} nodes from BU '{selected_bu}'")
     for i, n in enumerate(nodes[:3], 1):
-        logger.info(f"🏷 Top #{i}: source={n.node.metadata.get('source')} score={n.score:.3f}")
+        # grab a cleaned-up snippet of the chunk
+        snippet = n.node.get_text().strip().replace("\n", " ")
+        # log source, score, section path, and the snippet
+        logger.info(
+            "🏷 Top #%d: source=%s score=%.3f path=%s\n    chunk=\"%s\"",
+            i,
+            n.node.metadata.get("source"),
+            n.score,
+            n.node.metadata.get("section_path"),
+            snippet[:200]  # first 200 chars
+        )
 
     for i, n in enumerate(nodes):
         print(f"\n== Chunk {i+1} ==")
@@ -373,7 +440,7 @@ async def send_with_feedback(
     current_doc = cl.user_session.get("current_doc")
     if current_doc:
         footer_lines.append(f"📄 กำลังเช็คจากงานเอกสาร: {current_doc}")
-    footer_lines.append("หากต้องการเริ่มคำถามใหม่ กรุณาพิมพ์ 0 ")
+    footer_lines.append("🔴 หากต้องการเริ่มคำถามใหม่ กรุณาพิมพ์ 0 ")
     footer = "\n\n" + "\n".join(footer_lines)
 
     content = content + footer
@@ -384,6 +451,10 @@ async def send_with_feedback(
         await msg.stream_token(char)
         await asyncio.sleep(0.005)
     await msg.update()
+
+    # ✅ Save assistant message to chat memory
+    memory = cl.user_session.get("memory")
+    memory.put(ChatMessage(role="assistant", content=content.strip()))
 
 
 # ======================================================================================
@@ -497,23 +568,60 @@ def clear_clarification_state():
         cl.user_session.set(key, None)
 
 
-async def answer_from_node(node, user_q):
+async def answer_from_node(node_or_nodes, user_q):
+    """Builds and sends the final LLM response from one or more selected nodes with a loading animation."""
     clear_clarification_state()
     cl.user_session.set("awaiting_clarification", False)
-    """Builds and sends the final LLM response from a single selected node with a loading animation."""
-    # Always pull the original question from session if available
-    orig_q = cl.user_session.get("pre_drill_query", user_q)
 
-    src = node.node.metadata.get("source", "Unknown")
-    txt = node.node.text.replace("\n", " ")
-    prompt = (
-        f'ผู้ใช้ถามว่า: "{orig_q}"\n'
-        f'บทความที่เลือกมาจากเอกสารนโยบาย "{src}" (เต็มข้อความ):\n"""{txt}\n"""\n\n'
-        "กรุณาตอบโดยอาศัยเนื้อหาในบทความนี้"
-    )
+    orig_q = cl.user_session.get("original_user_question")
     runnable = cl.user_session.get("runnable")
 
-    # ─── Kick off the loading animation ───
+    # Ensure input is a list of nodes
+    if isinstance(node_or_nodes, list):
+        nodes = node_or_nodes
+    else:
+        nodes = [node_or_nodes]
+
+    # Log the number of chunks being sent
+    logger.info(f"📚 Preparing to answer with {len(nodes)} chunk(s) from source.")
+
+    # Build full text from all selected chunks
+    full_text = "\n\n".join(n.node.text.strip().replace("\n", " ") for n in nodes)
+    source = nodes[0].node.metadata.get("source", "Unknown")
+
+    logger.info(f"📄 Answer source: {source}")
+    logger.info(f"📦 Combined chunk text length: {len(full_text)} characters")
+
+    # Build the LLM prompt
+    section_titles = [n.node.metadata.get("section_path", [])[-1] for n in nodes]
+    section_str = " / ".join(section_titles)
+    # Track selection path (e.g., H1 → H2 → H3)
+    full_paths = [n.node.metadata.get("section_path", []) for n in nodes]
+    if full_paths:
+        # Choose the most complete section path
+        deepest_path = max(full_paths, key=lambda p: len(p))
+        selection_path = cl.user_session.get("selection_path") or []
+        selection_path.append(" / ".join(deepest_path))
+        cl.user_session.set("selection_path", selection_path)
+        logger.info(f"📌 Updated selection path memory: {selection_path}")
+
+    path_history_str = "\n".join(f"👉 {p}" for p in selection_path)
+
+    # Build the LLM prompt using selection path
+    prompt = (
+        f'ผู้ใช้ถามว่า: "{orig_q}"\n\n'
+        f'🧭 เส้นทางการเลือกหัวข้อของผู้ใช้:\n{path_history_str}\n\n'
+        f'📚 หัวข้อที่เกี่ยวข้อง: {section_str}\n'
+        f'📄 เอกสารนโยบาย: "{source}"\n\n'
+        f'เนื้อหาที่เกี่ยวข้องมีดังนี้:\n"""{full_text}\n"""\n\n'
+        "กรุณาตอบโดยอ้างอิงรายละเอียดทั้งหมดจากเนื้อหานี้อย่างครบถ้วนและระบุเงื่อนไขที่เกี่ยวข้องให้ชัดเจน "
+        "หากมีกรณีหรือเงื่อนไขพิเศษ โปรดแสดงให้ครบทุกกรณี เช่น “ถ้า…ให้…” หรือ “ในกรณีที่…ต้อง…” "
+        "และอย่าสรุปรวมหลายเงื่อนไขเป็นบรรทัดเดียว"
+    )
+    
+    logger.info(f"🧠 Final LLM prompt = \n{prompt}")
+
+    # Loading animation
     frames = ["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"]
     animation_task = asyncio.create_task(
         send_animated_message("กำลังเช็ค Policy ให้อยู่ รอสักครู่นะคะ …", frames, interval=0.3)
@@ -521,19 +629,18 @@ async def answer_from_node(node, user_q):
     logger.info("🔄 Starting loading animation for answer_from_node")
 
     try:
-        # offload the blocking .query call so the event loop stays free
         loop = asyncio.get_event_loop()
         resp = await loop.run_in_executor(None, runnable.query, prompt)
         answer = resp.response if hasattr(resp, "response") else "".join(resp.response_gen)
     finally:
-        # ─── Stop the animation ───
         animation_task.cancel()
         with suppress(asyncio.CancelledError):
             await animation_task
 
     answer = extract_and_format_table(answer.strip())
+    final = f"✅ นี่คือสิ่งที่พบจาก “{source}”:\n\n{answer}"
 
-    final = f"✅ นี่คือสิ่งที่พบจาก “{src}”:\n\n{answer}"
+    # Send and log the response
     await send_with_feedback(final, metadata={"difficulty": "Clarified"})
     save_conversation_log(
         cl.context.session.thread_id,
@@ -542,7 +649,8 @@ async def answer_from_node(node, user_q):
         answer,
         difficulty="Clarified"
     )
-
+    
+    cl.user_session.set("reset_memory_next_turn", True)
 
 # ======================================================================================
 # Chainlit Event Handlers
@@ -638,9 +746,265 @@ def auth_callback(username: str, password: str):
                 "provider": "credentials"
             }
         )
+        
+        
+    if (username, password) == ("User_8", "123456"):
+        logger.info("✅ Login success for User_8")
+        return cl.User(
+            identifier="User_8",
+            metadata={
+                "role": "USER",
+                "email": "user_8@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_9", "123456"):
+        logger.info("✅ Login success for User_9")
+        return cl.User(
+            identifier="User_9",
+            metadata={
+                "role": "USER",
+                "email": "user_9@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_10", "123456"):
+        logger.info("✅ Login success for User_10")
+        return cl.User(
+            identifier="User_10",
+            metadata={
+                "role": "USER",
+                "email": "user_10@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_11", "123456"):
+        logger.info("✅ Login success for User_11")
+        return cl.User(
+            identifier="User_11",
+            metadata={
+                "role": "USER",
+                "email": "user_11@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_12", "123456"):
+        logger.info("✅ Login success for User_12")
+        return cl.User(
+            identifier="User_12",
+            metadata={
+                "role": "USER",
+                "email": "user_12@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_13", "123456"):
+        logger.info("✅ Login success for User_13")
+        return cl.User(
+            identifier="User_13",
+            metadata={
+                "role": "USER",
+                "email": "user_13@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_14", "123456"):
+        logger.info("✅ Login success for User_14")
+        return cl.User(
+            identifier="User_14",
+            metadata={
+                "role": "USER",
+                "email": "user_14@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_15", "123456"):
+        logger.info("✅ Login success for User_15")
+        return cl.User(
+            identifier="User_15",
+            metadata={
+                "role": "USER",
+                "email": "user_15@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_16", "123456"):
+        logger.info("✅ Login success for User_16")
+        return cl.User(
+            identifier="User_16",
+            metadata={
+                "role": "USER",
+                "email": "user_16@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_17", "123456"):
+        logger.info("✅ Login success for User_17")
+        return cl.User(
+            identifier="User_17",
+            metadata={
+                "role": "USER",
+                "email": "user_17@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_18", "123456"):
+        logger.info("✅ Login success for User_18")
+        return cl.User(
+            identifier="User_18",
+            metadata={
+                "role": "USER",
+                "email": "user_18@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_19", "123456"):
+        logger.info("✅ Login success for User_19")
+        return cl.User(
+            identifier="User_19",
+            metadata={
+                "role": "USER",
+                "email": "user_19@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_20", "123456"):
+        logger.info("✅ Login success for User_20")
+        return cl.User(
+            identifier="User_20",
+            metadata={
+                "role": "USER",
+                "email": "user_20@example.com",
+                "provider": "credentials"
+            }
+        )
+        
+    if (username, password) == ("User_21", "123456"):
+        logger.info("✅ Login success for User_21")
+        return cl.User(
+            identifier="User_21",
+            metadata={
+                "role": "USER",
+                "email": "user_21@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_22", "123456"):
+        logger.info("✅ Login success for User_22")
+        return cl.User(
+            identifier="User_22",
+            metadata={
+                "role": "USER",
+                "email": "user_22@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_23", "123456"):
+        logger.info("✅ Login success for User_23")
+        return cl.User(
+            identifier="User_23",
+            metadata={
+                "role": "USER",
+                "email": "user_23@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_24", "123456"):
+        logger.info("✅ Login success for User_24")
+        return cl.User(
+            identifier="User_24",
+            metadata={
+                "role": "USER",
+                "email": "user_24@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_25", "123456"):
+        logger.info("✅ Login success for User_25")
+        return cl.User(
+            identifier="User_25",
+            metadata={
+                "role": "USER",
+                "email": "user_25@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_26", "123456"):
+        logger.info("✅ Login success for User_26")
+        return cl.User(
+            identifier="User_26",
+            metadata={
+                "role": "USER",
+                "email": "user_26@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_27", "123456"):
+        logger.info("✅ Login success for User_27")
+        return cl.User(
+            identifier="User_27",
+            metadata={
+                "role": "USER",
+                "email": "user_27@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_28", "123456"):
+        logger.info("✅ Login success for User_28")
+        return cl.User(
+            identifier="User_28",
+            metadata={
+                "role": "USER",
+                "email": "user_28@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_29", "123456"):
+        logger.info("✅ Login success for User_29")
+        return cl.User(
+            identifier="User_29",
+            metadata={
+                "role": "USER",
+                "email": "user_29@example.com",
+                "provider": "credentials"
+            }
+        )
+
+    if (username, password) == ("User_30", "123456"):
+        logger.info("✅ Login success for User_30")
+        return cl.User(
+            identifier="User_30",
+            metadata={
+                "role": "USER",
+                "email": "user_30@example.com",
+                "provider": "credentials"
+            }
+        )
+
+
 
     logger.warning(f"❌ Login failed for {username}")
-    return None
+    
 
 
 @cl.set_chat_profiles
@@ -695,68 +1059,155 @@ async def on_chat_start():
         llm_model = CHAT_PROFILES.get(chat_profile, {}).get("llm_settings", {}).get("model")
         logger.info(f"Chat started with profile: '{chat_profile}', LLM Model ID: '{llm_model}'")
 
-    logger.info(f"🚀 Starting poll_all_admin_replies for thread: {thread_id}")
-    asyncio.create_task(poll_all_admin_replies(thread_id))
+    # ✅ Clear clarification state on new chat start
+    clear_clarification_state()
+
+    logger.info("🚀 on_chat_start triggered")
+    
+    await ask_business_unit()
 
 
-@cl.on_chat_resume
-async def on_chat_resume(thread: ThreadDict):
-    """Handles chat resumption from history."""
-    thread_id = thread.get("id")
+@cl.on_chat_start
+async def on_chat_start():
+    """Initializes the chat session."""
+    logger.info(f"💬 on_chat_start called for user: {cl.user_session.get('user')}")
+    thread_id = cl.context.session.thread_id
+    dl: SQLAlchemyDataLayer = get_data_layer()
+    engine = dl.engine
+
+    # Persist thread row
+    meta = MetaData()
+    threads_table = Table("threads", meta, Column("id", PG_UUID(as_uuid=True), primary_key=True))
+    thread_uuid = uuid.UUID(thread_id)
+    async with engine.begin() as conn:
+        await conn.execute(pg_insert(threads_table).values(id=thread_uuid).on_conflict_do_nothing())
+
+    # Setup memory and runnable
     app_user = cl.user_session.get("user")
     redis_session_id = f"{app_user.identifier}:{thread_id}"
-
-    # Rebuild memory
     memory = ChatMemoryBuffer.from_defaults(
         token_limit=TOKEN_LIMIT, chat_store=chat_store, chat_store_key=redis_session_id
     )
-    root_messages = [m for m in thread["steps"] if m["parentId"] is None and m.get("output", "").strip()]
-    for message in root_messages:
-        role = "user" if message["type"] == "user_message" else "assistant"
-        memory.put(ChatMessage(role=role, content=message["output"]))
     cl.user_session.set("memory", memory)
-
-    # Load saved clarification state
-    dl = get_data_layer()
-    engine = dl.engine
-    async with AsyncSession(engine) as session:
-        result = await session.execute(select(clarification_state).where(clarification_state.c.thread_id == thread_id))
-        row = result.mappings().first()
-
-    if row:
-        data = dict(row)
-        cl.user_session.set("awaiting_clarification", True)
-        cl.user_session.set("possible_summaries", data["summaries"])
-        from types import SimpleNamespace
-        nodes = [SimpleNamespace(score=n["score"], node=SimpleNamespace(text=n["text"], metadata=n["meta"])) for n in data["nodes"]]
-        cl.user_session.set("nodes_to_consider", nodes)
-
     setup_runnable()
+
+    # ✅ Reset chat profile state
+    cl.user_session.set("chat_profile", {
+        "name": "default",
+        "clarify_state": None,
+        "clarification_candidates": [],
+        "selected_clarification": None,
+        "question_count": 0,
+        "current_bu": None  # Optional: reset BU
+    })
+
+    logger.info("🚀 on_chat_start triggered")
+    
+    await ask_business_unit()
 
 
 @cl.on_message
 async def on_message(message: cl.Message):
     """Handles incoming user messages."""
     text = message.content.strip()
+    thread_id = cl.context.session.thread_id
+
+    # ✅ Log incoming message
+    save_conversation_log(thread_id, message.id, role="user", content=text)
+
+    # ✅ Ensure memory exists
+    memory = cl.user_session.get("memory")
+    if memory is None:
+        user_id = cl.user_session.get("user").identifier
+        redis_key = f"{user_id}:{thread_id}"
+        memory = ChatMemoryBuffer.from_defaults(
+            token_limit=TOKEN_LIMIT,
+            chat_store=chat_store,
+            chat_store_key=redis_key
+        )
+        cl.user_session.set("memory", memory)
+
+    # ✅ Append new message to memory
+    # ✅ Only log raw user input if not in clarification mode
+    if not cl.user_session.get("awaiting_clarification"):
+        memory.put(ChatMessage(role="user", content=text))
+        logger.info(f"✅ Appended to memory: {text}")
+
+    # ✅ Log updated memory state
+    logger.info("🧠 Memory after appending new user message:")
+    for i, msg in enumerate(memory.get()):
+        logger.info(f"[{i}] {msg.role.upper()}: {msg.content}")
     
+    
+    if cl.user_session.get("selected_bu") is None and not cl.user_session.get("awaiting_bu_selection"):
+        logger.info("💡 First user message with no BU selected → ask for BU")
+        await ask_business_unit()
+        return
+    # Handle BU selection if awaiting
+    if cl.user_session.get("awaiting_bu_selection", False):
+        logger.info("🔁 Handling user BU input: %s", text)
+        bu_list = cl.user_session.get("business_units") or []
+        try:
+            index = int(text) - 1
+            if 0 <= index < len(bu_list):
+                selected_bu = bu_list[index]
+                cl.user_session.set("selected_bu", selected_bu)
+                cl.user_session.set("awaiting_bu_selection", False)
+                logger.info("✅ BU selected: %s", selected_bu)
+                await cl.Message(content=f"✅ เลือก BU: {selected_bu} แล้ว กรุณาพิมพ์คำถามของคุณ").send()
+                return  # <-- keep return only here after successful BU selection
+            else:
+                logger.warning("⚠️ Invalid BU index")
+                await cl.Message(content="⚠️ โปรดเลือกหมายเลขที่ถูกต้อง").send()
+                return
+        except ValueError:
+            logger.warning("⚠️ Non-numeric BU input")
+            await cl.Message(content="⚠️ โปรดระบุหมายเลขของ BU ที่ต้องการ").send()
+            return
 
     # ─── Global “start new conversation” shortcut ───
     if text == "0" or text == "❌ ถามคำถามใหม่":
-        # Clear any in‐flight clarification state
-        cl.user_session.set("awaiting_clarification", False)
-        cl.user_session.set("clarification_just_exited", True)
-        cl.user_session.set("filtered_nodes", None)
-        cl.user_session.set("clarification_level", None)
-        cl.user_session.set("auto_skipped", None)
-        cl.user_session.set("current_doc", None)
+        clear_clarification_state()
 
-        # Wipe Redis‐backed chat store
+        for key in [
+            "awaiting_clarification",
+            PRE_DRILL_KEY,
+            AWAITING_PRE_DRILL,
+            "pre_drill_nodes",
+            "pre_drill_query",
+            DOC_CHOICES_KEY,
+            "filtered_nodes",
+            "hier_sections",
+            "clarification_level",
+            "policy_auto_select",
+            "auto_skipped",
+            "current_doc",
+            "original_user_question",
+            "selected_bu",
+            "awaiting_bu_selection",
+            "clarification_just_exited",
+            "selected_h1",       # ✅ clear H1
+            "selected_title",
+            "ordered_h2",         # ✅ clear selected section title
+            "selected_nodes",         # ✅ clear previously filtered nodes
+        ]:
+            if key in (
+                "awaiting_clarification",
+                PRE_DRILL_KEY,
+                AWAITING_PRE_DRILL,
+                "awaiting_bu_selection",
+            ):
+                cl.user_session.set(key, False)
+            else:
+                cl.user_session.set(key, None)
+
+        # Wipe Redis-backed memory
         thread_id = cl.context.session.thread_id
         user_id = cl.user_session.get("user").identifier
         redis_key = f"{user_id}:{thread_id}"
         redis_client.delete(redis_key)
 
-        # Re‐init memory buffer
+        # Reinitialize memory
         fresh_mem = ChatMemoryBuffer.from_defaults(
             token_limit=TOKEN_LIMIT,
             chat_store=chat_store,
@@ -764,10 +1215,16 @@ async def on_message(message: cl.Message):
         )
         cl.user_session.set("memory", fresh_mem)
 
-        # Notify user
-        await send_with_feedback(
-            "✅ เริ่มต้นการสนทนาใหม่—หน่วยความจำถูกล้างแล้ว กรุณาพิมพ์คำถามของคุณอีกครั้ง"
-        )
+        # ✅ Inform user in the conversation
+        await cl.Message(
+            content="🧹 ระบบได้เริ่มต้นการสนทนาใหม่แล้ว กรุณาเลือกหน่วยงานของคุณอีกครั้ง 👇"
+        ).send()
+
+        # Trigger BU selection prompt
+        logger.info("🔄 User reset triggered → show BU options again")
+        await ask_business_unit()
+        cl.user_session.set("awaiting_bu_selection", True)
+
         return
 
     logger.info(f"Received message from user: {message.content}")
@@ -775,18 +1232,21 @@ async def on_message(message: cl.Message):
     retriever = cl.user_session.get("retriever")
     thread_id = cl.context.session.thread_id
 
-    save_conversation_log(thread_id, message.id, role="user", content=message.content)
-    memory = cl.user_session.get("memory")
-    memory.put(ChatMessage(role="user", content=message.content))
 
     if not runnable or not retriever:
         await send_with_feedback("⚠️ System not ready. Please try again later.")
         return
 
+    # Only set the original user question once
+    if cl.user_session.get("original_user_question") is None:
+        cl.user_session.set("original_user_question", message.content.strip())
+
     if cl.user_session.get("awaiting_clarification"):
         await handle_clarification_response(message)
     else:
         await handle_standard_query(message)
+
+
 
 
 # ======================================================================================
@@ -796,6 +1256,7 @@ async def on_message(message: cl.Message):
 async def handle_clarification_response(message: cl.Message):
     """Handles user's response during a clarification flow, including hierarchical clarification."""
     # ─── Hierarchical pick response ───
+
     if cl.user_session.get("awaiting_clarification"):
         sections: Dict[str, List] = cl.user_session.get("hier_sections", {})
         titles = list(sections.keys())
@@ -805,6 +1266,8 @@ async def handle_clarification_response(message: cl.Message):
         exit_label = "❌ ถามคำถามใหม่"
         candidates = titles + [exit_label]
         idx = None
+        
+
 
         # Parse numeric or fuzzy choice
         if choice.isdigit():
@@ -821,6 +1284,7 @@ async def handle_clarification_response(message: cl.Message):
         if idx is None or idx < 0 or idx >= len(candidates):
             await send_with_feedback("⚠️ โปรดระบุหมายเลขหรือชื่อหัวข้อให้ถูกต้องอีกครั้ง")
             return
+        
 
         # Exit option selected?
         if idx == len(candidates) - 1:
@@ -847,10 +1311,21 @@ async def handle_clarification_response(message: cl.Message):
                 "✅ คุณได้เลือกเริ่มต้นคำถามใหม่แล้ว! กรุณาพิมพ์คำถามใหม่ของคุณได้เลย"
             )
             return
-
+        memory = cl.user_session.get("memory")
+        # Don't log the number, log the clarified section
+        if memory and idx < len(titles):
+            clarified_section = titles[idx]
+            memory.put(ChatMessage(role="user", content=f"Clarified: {clarified_section}"))
+            logger.info(f"✅ Appended clarified section to memory: {clarified_section}")
         # Normal section picked
         selected_title = titles[idx]
         selected_nodes = sections[selected_title]
+        logger.info(f"🔍 Hierarchical: user picked “{selected_title}” with {len(selected_nodes)} chunks")
+
+        # ✅ Save clarified user choice to memory
+        memory = cl.user_session.get("memory")
+        original_q = cl.user_session.get("original_user_question") or message.content
+        memory.put(ChatMessage(role="user", content=f"Clarified: {selected_title}"))
         logger.info(f"🔍 Hierarchical: user picked “{selected_title}” with {len(selected_nodes)} chunks")
         cl.user_session.set("filtered_nodes", selected_nodes)
         # Stay in clarification flow
@@ -1043,14 +1518,111 @@ async def re_clarify(nodes: list, original_query: str):
         ),
         author="Customer Service Agent",
     )
+    
+async def show_h1_options(message):
+    h1_options = cl.user_session.get("h1_options") or []
+    exit_label = "❌ ถามคำถามใหม่"
+    opts = h1_options + [exit_label]
+
+    lines = [f"{i+1}. {title}" for i, title in enumerate(opts)]
+    text = "❓ โปรดเลือกหัวข้อหลัก (ระดับ 1):\n\n" + "\n".join(lines)
+    text += "\n\n🔴 ตอบด้วยหมายเลข หรือพิมพ์ชื่อหัวข้อที่ต้องการหรือพิมพ์ '0' เพื่อเลือก Business Group ใหม่"
+
+    await cl.Message(
+        content=text,
+        author="Customer Service Agent"
+    ).send()
 
 
 async def handle_standard_query(message: cl.Message):
     """Handles a standard, non-clarification query with hierarchical clarification."""
+
     import re
     from collections import defaultdict
     from difflib import SequenceMatcher
     import statistics
+    # At the top of handle_standard_query
+    memory = cl.user_session.get("memory")
+    if memory:
+        memory.put(ChatMessage(role="user", content=message.content))
+        logger.info("🧠 Memory after input:")
+        for m in memory.get():
+            logger.info(f"{m.role}: {m.content}")
+    current_q = message.content.strip()
+    prev_q    = cl.user_session.get("pre_drill_query")
+    original_q = current_q
+    orig_q = current_q
+
+    #cl.user_session.set("original_user_question", current_q)
+    if cl.user_session.get("drill_level") == "h1":
+        h1_options = cl.user_session.get("h1_options") or []
+        user_input = message.content.strip()
+
+        selected_h1 = None
+        if user_input.isdigit():
+            index = int(user_input) - 1
+            if 0 <= index < len(h1_options):
+                selected_h1 = h1_options[index]
+        else:
+            from difflib import get_close_matches
+            matches = get_close_matches(user_input, h1_options, n=1, cutoff=0.75)
+            if matches:
+                selected_h1 = matches[0]
+
+        if selected_h1:
+            logger.info("✅ H1 drill selected: %s", selected_h1)
+            cl.user_session.set("drill_level", None)
+            cl.user_session.set("selected_h1", selected_h1)
+
+            # Immediately continue to H2 selection using the filtered H1 chunks
+            doc_nodes = cl.user_session.get("pre_drill_nodes") or []
+            filtered_nodes = [
+                n for n in doc_nodes
+                if (path := n.node.metadata.get("section_path", [])) and len(path) >= 2 and path[0] == selected_h1
+            ]
+
+            cl.user_session.set("selected_h1", selected_h1)
+            cl.user_session.set("h1_filtered_nodes", filtered_nodes)
+
+            # 🧠 Run the same handler again, now with drill_level cleared and H1 locked
+            
+            return await handle_standard_query(message)
+
+            
+        else:
+            logger.warning("❌ Invalid H1 input: %s", user_input)
+
+            # NEW: Heuristic fallback — treat it as new question if it looks like a real sentence
+            if len(user_input) > 10 and not user_input.isdigit():
+                logger.info("🧠 User likely typed a real question, exiting H1 drill mode.")
+                cl.user_session.set("drill_level", None)
+                cl.user_session.set("h1_options", None)
+                return await handle_standard_query(message)
+
+            await cl.Message("❌ ไม่พบหัวข้อที่คุณเลือก โปรดลองอีกครั้ง หรือพิมพ์ 0 เพื่อเริ่มใหม่").send()
+            return
+
+    
+     # ─── 11) Fuzzy-fallback & final LLM answer ─────────────────────────────────
+    # compute how close we are to any of your canned Q→A
+    fuzzy_scores = {
+        q: SequenceMatcher(None, current_q.lower(), q.lower()).ratio()
+        for q in predefined_answers
+    }
+    best_q, fuzzy_score = max(fuzzy_scores.items(), key=lambda kv: kv[1], default=("", 0.0))
+
+    if fuzzy_score >= FUZZY_THRESHOLD:
+        logger.info(f"✅ Fuzzy override: “{current_q}” ≈ “{best_q}” ({fuzzy_score:.2f}) → predefined answer")
+        await send_with_feedback(predefined_answers[best_q], author="Customer Service Agent")
+        return
+    
+        # ─── 4) Prepare retrieval █────────────────────────────────────
+    retriever = cl.user_session.get("retriever")
+    thread_id = cl.context.session.thread_id
+    memory = cl.user_session.get("memory")
+    past = memory.get()[-3:]
+    context = "\n".join(f"{m.role.title()}: {m.content.strip()}" for m in past if m.content.strip())
+    query_with_context = f"{context}\nUser: {message.content}" if context else message.content
 
     # ─── A) If the user just restarted (via ❌ or 0), clear pre-drill so next input re-prompts ───
     if cl.user_session.get("clarification_just_exited"):
@@ -1084,25 +1656,52 @@ async def handle_standard_query(message: cl.Message):
                 embedding_type="float",
             ),
         )
+
         all_nodes = pre_drill_retriever.retrieve(original_q)
+
+        # Enforce BU filtering at pre-drill stage
+        selected_bu = cl.user_session.get("selected_bu") or "ALL"
+        if selected_bu != "ALL":
+            allowed_docs = BU_DOCUMENT_MAP.get(selected_bu, [])
+            all_nodes = [
+                n for n in all_nodes
+                if n.node.metadata.get("source", "").split("/")[-1] in allowed_docs
+            ]
+            logger.info("📁 Filtered doc list for BU=%s → %s", selected_bu, allowed_docs)
+
         cl.user_session.set("pre_drill_nodes", all_nodes)
-        
-        # — Log each document’s best score —
+
+        # Log each document’s best score
         doc_scores = {}
         for n in all_nodes:
             src = n.node.metadata.get("source", "Unknown")
             doc_scores[src] = max(doc_scores.get(src, 0.0), n.score)
         for src, score in doc_scores.items():
             logger.info(f"🔍 Doc candidate: '{src}' with top score {score:.3f}")
+            
+        
 
 
         # ─── AUTO-SELECT Policy FAQ.docx if confident ───
 
-        POLICY_AUTO_THRESH    = 0.6   # only policy FAQ ≥0.55 auto-selects
-        DOC_CANDIDATE_THRESH  = 0.52   # any doc ≥0.40 is eligible for the user to choose
-
+        POLICY_AUTO_THRESH    = 0.5   # only policy FAQ ≥0.55 auto-selects
+        DOC_CANDIDATE_THRESH  = 0.5   # any doc ≥0.40 is eligible for the user to choose
+        BU_RELEVANCE_THRESHOLD = 0.50
         policy_score = doc_scores.get("Policy FAQ.docx", 0.0)
         top_score = max(doc_scores.values(), default=0.0)
+        if top_score < BU_RELEVANCE_THRESHOLD:
+            logger.warning(
+                "❌ Rejected: top_score %.3f is below BU_RELEVANCE_THRESHOLD %.3f → Question may not be relevant to selected BU/doc",
+                top_score,
+                BU_RELEVANCE_THRESHOLD,
+            )
+            await cl.Message(
+                content=(
+                    "คำถามนี้ดูเหมือนไม่เกี่ยวข้องกับเอกสารในหน่วยงานที่คุณเลือกไว้ (BU: **%s**).\n\n"
+                    "กรุณาลองเลือกคำถามใหม่ หรือเลือก BU อื่นที่ตรงกับเนื้อหามากกว่า"
+                ) % cl.user_session.get("selected_bu", "N/A")
+            ).send()
+            return  # ⛔ Stop the flow here
 
         if policy_score == top_score and policy_score >= POLICY_AUTO_THRESH:
             # High-confidence hit in Policy FAQ.docx → pick it immediately
@@ -1129,6 +1728,14 @@ async def handle_standard_query(message: cl.Message):
                 src for src, score in doc_scores.items()
                 if score >= DOC_CANDIDATE_THRESH and src != "Policy FAQ.docx"
             ]
+            # If that yields ≤1 but you still have multiple docs overall, fall back
+            if len(doc_set) <= 1 and len(doc_scores) > 1:
+                # prompt on the top 5 by score (excluding FAQ)
+                doc_set = [
+                    src for src, _ in
+                    sorted(doc_scores.items(), key=lambda x: -x[1])
+                    if src != "Policy FAQ.docx"
+                ][:5]
             for src in doc_set:
                 logger.info(f"✅ Candidate doc: '{src}' (score {doc_scores[src]:.3f})")
 
@@ -1181,6 +1788,7 @@ async def handle_standard_query(message: cl.Message):
 
         selected_doc = docs[idx]
         cl.user_session.set("current_doc", selected_doc)
+        cl.user_session.set("selected_doc", selected_doc)
         cl.user_session.set(PRE_DRILL_KEY, True)
         cl.user_session.set(AWAITING_PRE_DRILL, False)
 
@@ -1206,6 +1814,16 @@ async def handle_standard_query(message: cl.Message):
         query = cl.user_session.get("pre_drill_query") or message.content
         retrieved_nodes = doc_retriever.retrieve(query)
 
+        # Enforce BU filtering again after user selects doc
+        selected_bu = cl.user_session.get("selected_bu") or "ALL"
+        if selected_bu != "ALL":
+            allowed_docs = BU_DOCUMENT_MAP.get(selected_bu, [])
+            retrieved_nodes = [
+                n for n in retrieved_nodes
+                if n.node.metadata.get("source", "").split("/")[-1] in allowed_docs
+            ]
+            logger.info("📁 (Doc Re-retrieve) Filtered doc list for BU=%s → %s", selected_bu, allowed_docs)
+
         # Now filter down to just the user-selected document
         filtered = [
             n for n in retrieved_nodes
@@ -1213,38 +1831,190 @@ async def handle_standard_query(message: cl.Message):
         ]
 
         logger.info("📄 User selected doc: %s", selected_doc)
-        logger.info("🔍 Retrieved %d chunks for that doc", len(filtered))
+
 
         cl.user_session.set("pre_drill_nodes", filtered)
         cl.user_session.set("filtered_nodes", filtered)
         # message.content remains unchanged so H2/H3 logic fires normally
+        
+    # ─── 2b) Handle hierarchical clarification selection ───
+    if cl.user_session.get("awaiting_clarification"):
+        level = cl.user_session.get("clarification_level", 2)
+        hier  = cl.user_session.get("hier_sections", {})   # { title: [nodes] }
+        choice = message.content.strip()
+
+        # Build the options
+        titles     = list(hier.keys())
+        exit_label = "❌ ถามคำถามใหม่"
+        opts       = titles + [exit_label]
+
+        idx = None
+
+        # 1) Digit?
+        if choice.isdigit():
+            i = int(choice) - 1
+            if 0 <= i < len(opts):
+                idx = i
+
+        # 2) Exact title?
+        if idx is None and choice in titles:
+            idx = titles.index(choice)
+
+        # 3) Fuzzy match (ratio > 0.6)
+        if idx is None:
+            from difflib import SequenceMatcher
+            best = (0.0, None)   # (ratio, index)
+            for i, t in enumerate(titles):
+                r = SequenceMatcher(None, choice, t).ratio()
+                if r > best[0]:
+                    best = (r, i)
+            if best[0] > 0.6:
+                idx = best[1]
+
+        # 4) Exit label
+        if idx is None and choice == exit_label:
+            idx = len(opts) - 1
+
+        # Invalid?
+        if idx is None:
+            logger.warning(f"⚠️ Invalid hierarchical choice: {choice}")
+            await send_with_feedback("⚠️ โปรดเลือกหมายเลขหรือชื่อหัวข้อให้ถูกต้อง")
+            return
+
+        selected = opts[idx]
+        logger.info(f"🔍 Hierarchical: user picked “{selected}” at level {level}")
+
+        # Exit → restart flow
+        if selected == exit_label:
+            cl.user_session.set("clarification_just_exited", True)
+            return await handle_standard_query(message)
+
+        # Clear menu flags
+        cl.user_session.set("awaiting_clarification", False)
+        cl.user_session.set("clarification_level", None)
+        
+        # ─── NEW: top-level H2 pick → only shortcut if no H3 children ───
+        if level == 1:
+            # look at pre_drill_nodes to see if there are any H3 under this H2
+            all_nodes = cl.user_session.get("h1_filtered_nodes") or cl.user_session.get("pre_drill_nodes") or []
+            has_h3 = any(
+                len(n.node.metadata.get("section_path", [])) >= 3 and
+                n.node.metadata["section_path"][1] == selected
+                for n in all_nodes
+            )
+            if not has_h3:
+                # no deeper subdivisions → answer immediately on best H2 chunk
+                h2_nodes = hier[selected]
+                best_h2_chunk = max(h2_nodes, key=lambda n: n.score)
+                logger.info(f"✅ H2 “{selected}” has no H3 → immediate answer (score {best_h2_chunk.score:.3f})")
+                clear_clarification_state()
+                #orig_q = cl.user_session.get("original_user_question")
+                combined_text = "\n\n".join(n.node.text for n in raw_h3[h2_key])
+                await send_with_feedback(
+                    f"✅ นี่คือสิ่งที่พบจาก “{h2_key}”:\n\n{combined_text}\n\nหากต้องการเริ่มคำถามใหม่ กรุณาพิมพ์ 0",
+                    author="Customer Service Agent"
+                )
+                clear_clarification_state()
+                cl.user_session.set("awaiting_clarification", False)
+                return
+            # otherwise fall through into your existing H3‐menu logic
+
+        # H2 → show H3 menu
+        if level == 2:
+            # Grab full pre-drill nodes
+            all_nodes = cl.user_session.get("h1_filtered_nodes") or cl.user_session.get("pre_drill_nodes") or []
+            from collections import defaultdict
+            raw_h3 = defaultdict(list)
+            for n in all_nodes:
+                path = n.node.metadata.get("section_path", [])
+                if len(path) >= 3 and path[1] == selected:
+                    raw_h3[path[2]].append(n)
+
+            # No H3 → answer on H2
+            if not raw_h3:
+                matching_chunks = [
+                    n for n in all_nodes
+                    if len(n.node.metadata.get("section_path", [])) >= 2
+                    and n.node.metadata["section_path"][1] == selected
+                ]
+                clear_clarification_state()
+                cl.user_session.set("awaiting_clarification", False)
+                #orig_q = cl.user_session.get("original_user_question")
+
+                logger.info("📚 No H3 found under H2: %s → %d chunks sent", selected, len(matching_chunks))
+                return await answer_from_node(matching_chunks, orig_q)
+
+            # Otherwise show H3 choices
+            cl.user_session.set("awaiting_clarification", True)
+            cl.user_session.set("clarification_level", 3)
+            cl.user_session.set("hier_sections", { h3: raw_h3[h3] for h3 in raw_h3 })
+
+            opts = list(raw_h3.keys()) + [exit_label]
+            lines = [f"{i+1}. {title}" for i, title in enumerate(opts)]
+            logger.info(f"🏷 Showing H3 menu with {len(raw_h3)} options")
+            await send_with_feedback(
+                "❓ โปรดเลือกหัวข้อย่อย (ระดับ 3):\n\n" + "\n".join(lines),
+                author="Customer Service Agent"
+                
+            )
+            logger.info("🧠 Current chat memory state: %s", cl.user_session.to_dict())
+            return
+
+        # H3 → answer immediately
+        else:  # level == 3
+            h3_nodes = hier[selected]
+            logger.info(f"✅ H3 selected: “{selected}” → {len(h3_nodes)} chunks sent via answer_from_nodes")
+            clear_clarification_state()
+            cl.user_session.set("awaiting_clarification", False)
+            #orig_q = cl.user_session.get("original_user_question")
+            return await answer_from_node(h3_nodes, orig_q)
+
 
 
     # ─── 3) Reset on new question ───
-    if not cl.user_session.get("awaiting_clarification"):
+    if not cl.user_session.get("awaiting_clarification") and current_q != prev_q:
         cl.user_session.set("auto_skipped", False)
         cl.user_session.set("hier_sections", None)
         cl.user_session.set("clarification_level", None)
-        if not cl.user_session.get(PRE_DRILL_KEY):
-            cl.user_session.set("filtered_nodes", None)
+        cl.user_session.set("filtered_nodes", None)
+    
 
-    # ─── 4) Prepare retrieval █────────────────────────────────────
-    retriever = cl.user_session.get("retriever")
-    thread_id = cl.context.session.thread_id
-    memory = cl.user_session.get("memory")
-    past = memory.get()[-3:]
-    context = "\n".join(f"{m.role.title()}: {m.content.strip()}" for m in past if m.content.strip())
-    query_with_context = f"{context}\nUser: {message.content}" if context else message.content
+
 
     # ─── 5) Retrieve (or reuse filtered_nodes) █────────────────────────────────────
     nodes = cl.user_session.get("filtered_nodes")
     if nodes is None:
         try:
-            nodes = retriever.retrieve(query_with_context)
-            for i, n in enumerate(nodes[:3], 1):
-                logger.info(f"🏷 Top #{i}: source={n.node.metadata.get('source')} score={n.score:.3f}")
+            # Retrieve raw nodes
+            query = message.content.strip()
+            nodes = retriever.retrieve(query)  # <--- You already defined `retriever` earlier in your function
 
-            # fuzzy-name fallback...
+            # ─── Enforce BU filtering early ─────────────────────────────
+            selected_bu = cl.user_session.get("selected_bu") or "ALL"
+            if selected_bu != "ALL":
+                allowed_docs = BU_DOCUMENT_MAP.get(selected_bu, [])
+                nodes = [n for n in nodes if n.node.metadata.get("source", "").split("/")[-1] in allowed_docs]
+                logger.info("📁 Filtered doc list for BU=%s → %s", selected_bu, allowed_docs)
+
+            if not nodes:
+                logger.warning("⚠️ No matching documents found for BU=%s. Falling back to all.", selected_bu)
+                await send_with_feedback("ไม่พบเอกสารที่เกี่ยวข้องกับ BU นี้", metadata={"difficulty": "Rejected"})
+                return
+
+            # Store for reuse
+            cl.user_session.set("filtered_nodes", nodes)
+
+            for i, n in enumerate(nodes[:3], 1):
+                snippet = n.node.get_text().strip().replace("\n", " ")
+                logger.info(
+                    "🏷 Top #%d: source=%s score=%.3f\n    chunk=\"%s\"",
+                    i,
+                    n.node.metadata.get("source"),
+                    n.score,
+                    snippet[:200]
+                )
+
+            # Fuzzy fallback
             name_pattern = r"^[A-Za-zก-๙]+(?:\s+[A-Za-zก-๙]+)+$"
             if re.fullmatch(name_pattern, message.content.strip()):
                 best_fuzzy, best_node = 0, None
@@ -1255,13 +2025,21 @@ async def handle_standard_query(message: cl.Message):
                 if best_fuzzy >= 0.6:
                     clear_clarification_state()
                     cl.user_session.set("awaiting_clarification", False)
-                    return await answer_from_node(best_node, query_with_context)
+                    orig_q = cl.user_session.get("original_user_question") or query_with_context
+                    return await answer_from_node(best_node, orig_q)
+
         except Exception:
             logger.exception("❌ Retrieval failed")
             await send_with_feedback("⚠️ เกิดข้อผิดพลาดในการค้นหา กรุณาลองใหม่อีกครั้ง")
             return
 
     # ─── 6) Scores, early-reject, auto-drill & auto-answer ─────────────────────
+    # ─── 6) Scores, early-reject, auto-drill & auto-answer ─────────────────────
+    pre_drill_nodes = cl.user_session.get("pre_drill_nodes")
+    if pre_drill_nodes:
+        logger.info("📦 Overriding nodes with user-selected document chunks (pre_drill_nodes)")
+        nodes = pre_drill_nodes
+
     top_score = nodes[0].score if nodes else 0.0
     logger.info(
         f"🧪 DEBUG | top_score={top_score:.4f}, "
@@ -1272,11 +2050,103 @@ async def handle_standard_query(message: cl.Message):
         f"🔍 About to check early-reject: top_score={top_score:.4f} vs VECTOR_MIN_THRESHOLD={VECTOR_MIN_THRESHOLD:.4f}"
     )
 
-    best_node = max(nodes, key=lambda n: n.score)
+    # Log top-ranked docs after BU filtering
+    logger.info("📑 Top-ranked docs after BU filtering:")
+    for n in nodes[:10]:  # log top 10
+        doc_name = n.node.metadata.get("source", "").split("/")[-1]
+        logger.info("🔍 Doc candidate: '%s' with score %.3f", doc_name, n.score)
+
+    # pick the highest-scoring chunk
+    # ─── Promote near-top H2 chunks over H1 ───
+    H2_OVERRULE_DELTA = 0.01
+    # partition by heading level
+    h1_nodes = [n for n in nodes if len(n.node.metadata.get("section_path", [])) == 1]
+    h2_nodes = [n for n in nodes if len(n.node.metadata.get("section_path", [])) >= 2]
+
+    if h2_nodes and h1_nodes:
+        best_h1_node = max(h1_nodes, key=lambda n: n.score)
+        best_h2_node = max(h2_nodes, key=lambda n: n.score)
+        if best_h2_node.score >= best_h1_node.score - H2_OVERRULE_DELTA:
+            best_node = best_h2_node
+        else:
+            best_node = best_h1_node
+    else:
+        best_node = max(nodes, key=lambda n: n.score)
+
     best_path = best_node.node.metadata.get("section_path", [])
     depth = len(best_path)
 
-    # 6a) Early-reject at top levels (depth<3)
+    # ─── NEW: deepest‐level + confidence + gap shortcut ───
+    DEEP_DIRECT_THRESHOLD = 0.60
+    DEEP_GAP_THRESHOLD    = 0.055
+
+    # look at your full pre‐drill to see how deep your document actually goes
+    all_pre_drill = cl.user_session.get("pre_drill_nodes") or []
+    max_depth    = max(len(n.node.metadata.get("section_path", [])) for n in all_pre_drill)
+    target_depth = max_depth - 1
+
+    # only consider when our best_node is at the deepest H3 level
+    if depth >= 3 and depth == target_depth and best_node.score >= DEEP_DIRECT_THRESHOLD:
+        # extract the H2 under which best_node lives
+        h2_key = best_path[1]
+
+        # 1) gather true H3 siblings (same depth, same parent H2)
+        sibling_scores = [
+            n.score
+            for n in all_pre_drill
+            if (
+                len(n.node.metadata.get("section_path", [])) == depth
+                and n.node.metadata["section_path"][1] == h2_key
+            )
+        ]
+
+        # 2) fallback: if none (weird), include any chunk under that H2
+        if not sibling_scores:
+            sibling_scores = [
+                n.score
+                for n in all_pre_drill
+                if (
+                    len(n.node.metadata.get("section_path", [])) >= 2
+                    and n.node.metadata["section_path"][1] == h2_key
+                )
+            ]
+
+        sibling_scores.sort(reverse=True)
+        top       = sibling_scores[0]
+        runner_up = sibling_scores[1] if len(sibling_scores) > 1 else 0.0
+        gap       = top - runner_up
+
+        logger.info(f"🏷 DEBUG siblings H3 scores under H2 “{h2_key}”: {sibling_scores}")
+        logger.info(
+            f"🏷 DEBUG deepest‐level check: depth={depth}, top={top:.3f}, "
+            f"runner_up={runner_up:.3f}, gap={gap:.3f} (threshold {DEEP_GAP_THRESHOLD})"
+        )
+
+        if gap >= DEEP_GAP_THRESHOLD:
+            logger.info(f"🏷 Deepest‐level direct‐answer (gap {gap:.3f} ≥ {DEEP_GAP_THRESHOLD})")
+
+            # Use all nodes from the same section_path as the best_node
+            section_path = best_node.node.metadata.get("section_path", [])
+            all_nodes = cl.user_session.get("h1_filtered_nodes") or cl.user_session.get("pre_drill_nodes") or []
+            matching_section = [
+                n for n in all_nodes
+                if n.node.metadata.get("section_path", []) == section_path
+            ]
+
+            clear_clarification_state()
+            cl.user_session.set("awaiting_clarification", False)
+            #orig_q = cl.user_session.get("original_user_question") or query_with_context
+            return await answer_from_node(matching_section, orig_q)
+        else:
+            logger.info(f"🏷 Gap too small ({gap:.3f} < {DEEP_GAP_THRESHOLD}) → showing H3 menu")
+    # ────────────────────────────────────────────────────────
+
+    # (…then falls through into your normal “no-H2s” or “auto‐drill” or H2/H3 menu code…)
+    # ─── fallback to H2/H3 menu as before ───
+
+    # ─── Otherwise fall back to your normal H2/H3 menu logic ───
+
+    # 6a) Early‐reject at top levels (depth<3)
     if (
         top_score < VECTOR_MIN_THRESHOLD
         and not cl.user_session.get("awaiting_clarification")
@@ -1289,162 +2159,319 @@ async def handle_standard_query(message: cl.Message):
         save_conversation_log(thread_id, message.id, "bot", "Rejected", "Rejected")
         return
 
-    # 6b) Auto-drill into H3 of the highest-scoring H2 (skip H2 menu)
-    VECTOR_AUTO_LEVEL3_THRESHOLD = 0.51
-    AUTO_LEVEL3_DEPTH = 3
+    # ─── 6b) Auto‐drill into H3 of the highest‐scoring H2 (skip H2 menu) ───────────
+    VECTOR_AUTO_LEVEL3_THRESHOLD = 0.6
     if not cl.user_session.get("awaiting_clarification") and top_score >= VECTOR_AUTO_LEVEL3_THRESHOLD:
-        # 1) Group by H2
         from collections import defaultdict
+        top_k_nodes = nodes[:5]
+        all_doc_nodes = cl.user_session.get("h1_filtered_nodes") or cl.user_session.get("pre_drill_nodes") or []  # ✅ use all nodes for hierarchy
+
+        # group all H2 sections from all_nodes (not just top_k)
+        all_nodes = cl.user_session.get("pre_drill_nodes") or []
         raw_h2 = defaultdict(list)
-        for n in nodes:
+        for n in all_nodes:
             path = n.node.metadata.get("section_path", [])
             if len(path) >= 2:
                 raw_h2[path[1]].append(n)
 
-        if raw_h2:
-            # 2) Score each H2 by its top chunk
-            section_scores = {h2: max(n.score for n in grp) for h2, grp in raw_h2.items()}
-            # 3) Pick the H2 with highest score
+        logger.info(f"🔍 Found {len(raw_h2)} unique H2 candidates from top_k_nodes")
+
+        if len(raw_h2) == 0:
+            logger.warning("⚠️ No valid H2 sections found — skipping auto-drill")
+        elif len(raw_h2) == 1:
+            logger.info("🛑 Only one H2 candidate — skipping auto-drill to avoid flooding LLM")
+        else:
+            # pick the top‐scoring H2
+            section_scores = {
+                h2: max(getattr(n, "score", top_score) or top_score for n in grp)
+                for h2, grp in raw_h2.items()
+            }
+            for h2, score in section_scores.items():
+                logger.info(f"📊 Section '{h2}' max score: {score:.3f}")
             top_h2, top_h2_score = max(section_scores.items(), key=lambda x: x[1])
             logger.info(f"🔍 Best H2 candidate: '{top_h2}' with score {top_h2_score:.3f}")
-            
-            for h2, score in section_scores.items():
-                logger.info(f"🔍 H2 candidate: '{h2}' → score {score:.3f}")
 
-            # Only drill if that H2 is confident enough
             if top_h2_score >= VECTOR_AUTO_LEVEL3_THRESHOLD:
-                # 4) Gather all H3 under that H2
+                # collect all H3 under that H2
                 h3_chunks = [
-                    n for n in nodes
+                    n for n in all_nodes  # ✅ again use top_k only
                     if len(n.node.metadata.get("section_path", [])) >= 3
                     and n.node.metadata["section_path"][1] == top_h2
                 ]
-                if h3_chunks:
-                    logger.info(
-                        "🏷 Auto-drill triggered: skipping H2 '%s' (score %.3f) → %d H3 chunks",
-                        top_h2, top_h2_score, len(h3_chunks)
-                    )
-                    cl.user_session.set("filtered_nodes", h3_chunks)
-                    cl.user_session.set("clarification_level", AUTO_LEVEL3_DEPTH)
-                    cl.user_session.set("awaiting_clarification", True)
-                    return await handle_standard_query(message)
 
-    # 6c) Auto-answer if extremely confident
-    VECTOR_AUTO_DIRECT_THRESHOLD = 0.63
-    if top_score >= VECTOR_AUTO_DIRECT_THRESHOLD:
+                if h3_chunks:
+                    logger.info("🏷 Auto-drill into H3 for '%s' → %d chunks", top_h2, len(h3_chunks))
+
+                    cl.user_session.set("awaiting_clarification", True)
+                    cl.user_session.set("clarification_level", 3)
+
+                    # map H3 titles → lists of nodes
+                    h3_map = {}
+                    for n in h3_chunks:
+                        title = n.node.metadata["section_path"][2]
+                        h3_map.setdefault(title, []).append(n)
+                    cl.user_session.set("hier_sections", h3_map)
+
+                    # send the H3 menu
+                    exit_label = "❌ ถามคำถามใหม่"
+                    opts = list(h3_map.keys()) + [exit_label]
+                    lines = [f"{i+1}. {title}" for i, title in enumerate(opts)]
+                    await send_with_feedback(
+                        "❓ โปรดเลือกหัวข้อย่อย (ระดับ 3):\n\n" + "\n".join(lines),
+                        author="Customer Service Agent"
+                    )
+                    return
+
+    # 6c) Auto‐answer if extremely confident
+    VECTOR_AUTO_DIRECT_THRESHOLD = 0.62 
+    if depth >= 2 and top_score >= VECTOR_AUTO_DIRECT_THRESHOLD:
         logger.info(
             "✅ Auto-answer triggered at depth %d (score %.3f)",
             depth, top_score
         )
+
+        # Use all nodes from the same section_path as the best_node
+        section_path = best_node.node.metadata.get("section_path", [])
+        all_nodes = cl.user_session.get("h1_filtered_nodes") or cl.user_session.get("pre_drill_nodes") or []
+        matching_section = [
+            n for n in all_nodes
+            if n.node.metadata.get("section_path", []) == section_path
+        ]
+
         clear_clarification_state()
         cl.user_session.set("awaiting_clarification", False)
-        return await answer_from_node(best_node, query_with_context)
+        #orig_q = cl.user_session.get("original_user_question") or query_with_context
+        return await answer_from_node(matching_section, orig_q)
+
 
     # ─── 8) 0th-drill: hierarchical section drill ─────────────────────────────────
+    # 🧠 Use selected_h1 if set (from previous drill), otherwise detect best_h1
+    selected_h1 = cl.user_session.get("selected_h1")
+    all_doc_nodes = cl.user_session.get("pre_drill_nodes") or []
+
+    if selected_h1:
+        logger.info(f"🛑 H1 already selected: '{selected_h1}', filtering all_doc_nodes")
+        all_doc_nodes = [
+            n for n in all_doc_nodes
+            if (path := n.node.metadata.get("section_path", [])) and path[0] == selected_h1
+        ]
+        best_h1 = selected_h1
+    else:
+        best_path = best_node.node.metadata.get("section_path", [])
+        best_h1 = best_path[0] if len(best_path) >= 1 else None
+        if best_h1:
+            cl.user_session.set("selected_h1", best_h1)
+    # 🔧 FIX: build section_scores (H1 → max score of its chunks)
+    section_scores = defaultdict(float)
+    for n in all_doc_nodes:
+        path = n.node.metadata.get("section_path", [])
+        if len(path) >= 1:
+            h1 = path[0]
+            section_scores[h1] = max(section_scores[h1], getattr(n, "score", 0.0))
+    all_h1s = []
+    for n in all_doc_nodes:
+        path = n.node.metadata.get("section_path", [])
+        if len(path) >= 1:
+            all_h1s.append(path[0])
+    logger.info("📚 Available H1s in pre_drill_nodes: %s", list(set(all_h1s)))
+    logger.info(f"📦 pre_drill_nodes fallback → using {len(all_doc_nodes)} nodes")
+    
+    # Sort H1s by score
+    ordered_h1 = sorted(section_scores.items(), key=lambda x: x[1], reverse=True)
+    logger.info("📊 H1 candidates by score: %s", ordered_h1)
+
+    if len(ordered_h1) >= 2:
+        top_h1, top_score = ordered_h1[0]
+        second_h1, second_score = ordered_h1[1]
+        score_gap = top_score - second_score
+        logger.info("🔍 H1 score gap = %.3f", score_gap)
+
+        if score_gap < 0.08:  # not a big gap, means ambiguity
+            cl.user_session.set("drill_level", "h1")
+            cl.user_session.set("h1_options", [h1 for h1, _ in ordered_h1[:5]])
+            cl.user_session.set("pre_drill_query", current_q)
+            cl.user_session.set("pre_drill_nodes", all_doc_nodes)
+            return await show_h1_options(message)
+
+    # Collect every H2 under that H1, regardless of retrieval score
     raw_h2 = defaultdict(list)
-    for n in nodes:
+    for n in all_doc_nodes:
+        path = n.node.metadata.get("section_path", [])
+        if len(path) >= 2 and path[0] == (selected_h1 or best_h1):
+            raw_h2[path[1]].append(n)
+    logger.info(f"🔍 Built raw_h2 with {len(raw_h2)} H2 sections from best_h1 = '{best_h1}'")
+    for h2, grp in raw_h2.items():
+        logger.info(f"🔍 raw_h2['{h2}'] → {len(grp)} chunks, top score {max(n.score for n in grp):.3f}")
+
+    # Build your section_scores map (you may still need it later)
+    section_scores = {h2: max(n.score for n in grp) for h2, grp in raw_h2.items()}
+    for h2, score in section_scores.items():
+        logger.info(f"📊 Section '{h2}' max score: {score:.3f}")
+    # ─── Always present *all* H2s in document order ─────────────────────────────
+    # ─── Always present H1 drill first if not already done ─────────────────────────────
+   # 🛑 If user already selected H1, skip H1 clarification and go straight to H2
+    selected_h1 = cl.user_session.get("selected_h1")
+    all_doc_nodes = cl.user_session.get("pre_drill_nodes") or []  # ensure fallback
+
+    if selected_h1:
+        logger.info(f"🛑 H1 already selected: '{selected_h1}', filtering pre_drill_nodes")
+        # Keep only chunks under the selected H1
+        filtered_nodes = [
+            n for n in all_doc_nodes
+            if (path := n.node.metadata.get("section_path", [])) and len(path) >= 2 and path[0] == selected_h1
+        ]
+        all_doc_nodes = filtered_nodes
+        # ⬅️ Right after filtering all_doc_nodes under selected H1
+        from collections import Counter
+
+        # Recalculate H2 section scores only under selected H1
+        h2_counter = Counter()
+        for n in all_doc_nodes:
+            path = n.node.metadata.get("section_path", [])
+            if len(path) >= 2:
+                h2_counter[path[1]] += 1
+
+        total = sum(h2_counter.values())
+        section_scores = {k: v / total for k, v in h2_counter.items()}
+        logger.info(f"📌 Filtered {len(all_doc_nodes)} nodes under selected H1: {selected_h1}")
+
+    else:
+        if cl.user_session.get("drill_level") != "h2":
+            # Build H1 options
+            h1_options = sorted(set(
+                path[0] for n in all_doc_nodes
+                if (path := n.node.metadata.get("section_path", [])) and len(path) >= 2
+            ))
+
+            if not selected_h1 and len(h1_options) > 1:
+                logger.info(f"📋 Prompting user to pick H1 from {len(h1_options)} options")
+                cl.user_session.set("drill_level", "h1")
+                cl.user_session.set("h1_options", h1_options)
+                cl.user_session.set("pre_drill_query", current_q)
+                cl.user_session.set("pre_drill_nodes", all_doc_nodes)
+
+                lines = [f"{i+1}. {h1}" for i, h1 in enumerate(h1_options)]
+                await send_with_feedback(
+                    "❓ โปรดเลือกหัวข้อหลัก (ระดับ 1):\n\n" + "\n".join(lines) + "\n\n❌ ถามคำถามใหม่",
+                    author="Customer Service Agent"
+                )
+                return
+
+    # ─── Proceed to H2 clarification ─────────────────────────────
+    all_doc_nodes = cl.user_session.get("pre_drill_nodes") or []
+    selected_h1 = cl.user_session.get("selected_h1")  # fallback if needed
+
+    # 🔧 Build hierarchy from all_doc_nodes
+    hierarchy = defaultdict(lambda: defaultdict(list))
+    for n in all_doc_nodes:
         path = n.node.metadata.get("section_path", [])
         if len(path) >= 2:
-            raw_h2[path[1]].append(n)
-    section_scores = {h: max(c.score for c in chs) for h, chs in raw_h2.items()}
-    # ─── Log each H2 candidate’s score ───
-    for h2, score in section_scores.items():
-        logger.info(f"🔍 H2 candidate: '{h2}' with vector score {score:.3f}")
+            h1, h2 = path[0], path[1]
+            hierarchy[h1][h2].append(n)
 
-    if cl.user_session.get("awaiting_clarification"):
-        ordered_h2 = sorted(section_scores, key=lambda h: section_scores[h], reverse=True)
-    else:
-        ordered_h2 = sorted([h for h, s in section_scores.items() if s >= VECTOR_MIN_THRESHOLD],
-                            key=lambda h: section_scores[h], reverse=True)
-    logger.info(f"🔍 ordered_h2 (post-threshold): {ordered_h2}")
+    logger.info(f"📚 Available H1s in pre_drill_nodes: {list(hierarchy.keys())}")
 
-    # ─── 9) Show H2 menu or dive into H3 / answer as before ────────────────────────
-    H2_THRESHOLD = 0.35
-    MAX_H2_OPTIONS = 5
+    # 🔧 🧯 Rebuild hierarchy if selected_h1 is missing
+    if selected_h1 not in hierarchy:
+        logger.warning(f"⚠️ selected_h1 '{selected_h1}' not found in hierarchy — rebuilding from full nodes")
+        full_nodes = cl.user_session.get("filtered_nodes") or all_doc_nodes
 
-    # Filter H2s with score >= threshold
-    filtered_h2s = [h for h in section_scores if section_scores[h] >= H2_THRESHOLD]
+        hierarchy = defaultdict(lambda: defaultdict(list))
+        for n in full_nodes:
+            path = n.node.metadata.get("section_path", [])
+            if len(path) >= 2:
+                h1, h2 = path[0], path[1]
+                hierarchy[h1][h2].append(n)
 
-    # Sort and take top N
-    ordered_h2 = sorted(filtered_h2s, key=lambda h: section_scores[h], reverse=True)[:MAX_H2_OPTIONS]
+        logger.info(f"🛠 Rebuilt hierarchy: {list(hierarchy.keys())}")
 
-    logger.info("🔍 ordered_h2 (filtered ≥ %.2f, top %d): %s",
-                H2_THRESHOLD,
-                MAX_H2_OPTIONS,
-                ", ".join(f"'{h}' ({section_scores[h]:.3f})" for h in ordered_h2))
+    # 🧯 Fallback if still missing
+    if selected_h1 not in hierarchy:
+        logger.warning(f"⚠️ selected_h1 '{selected_h1}' not found in hierarchy keys: {list(hierarchy.keys())}")
+
+        # 🧩 Fallback to answering using H1 chunk only
+        fallback_chunks = [
+            n for n in all_doc_nodes
+            if (path := n.node.metadata.get("section_path")) and len(path) >= 1 and path[0] == selected_h1
+        ]
+
+        if fallback_chunks:
+            logger.info("📤 Answering using fallback H1 chunk only (no H2)")
+
+            # Store user message in memory
+            memory = cl.user_session.get("memory")
+            if memory:
+                memory.put(ChatMessage(role="user", content=f"Clarified: {selected_h1}"))
+                logger.info(f"✅ Appended fallback clarified H1: {selected_h1}")
+
+            await answer_from_node(fallback_chunks, message.content)
+        else:
+            logger.warning("⚠️ No fallback chunks available for selected_h1")
+            await cl.Message("⚠️ ไม่พบเนื้อหาในหัวข้อนี้").send()
+
+        return
+
+    # Proceed to H2 clarification
+    ordered_h2 = list(hierarchy[selected_h1].keys())
+    raw_h2 = hierarchy[selected_h1]
 
     if len(ordered_h2) > 1:
-        logger.info(f"🏷 Showing H2 menu with {len(ordered_h2)} options")
         cl.user_session.set("awaiting_clarification", True)
-        cl.user_session.set("hier_sections", {h: raw_h2[h] for h in ordered_h2})
+        cl.user_session.set("clarification_level", 1)
+        cl.user_session.set("hier_sections", raw_h2)
+        cl.user_session.set("pre_drill_query", message.content)
+        cl.user_session.set("pre_drill_nodes", all_doc_nodes)
+
         exit_label = "❌ ถามคำถามใหม่"
         opts = ordered_h2 + [exit_label]
         lines = [f"{i+1}. {h}" for i, h in enumerate(opts)]
+
         await send_with_feedback(
             f"❓ โปรดเลือกหัวข้อย่อย (ระดับ 2):\n\n" + "\n".join(lines),
             author="Customer Service Agent"
         )
         return
+    else:
+        logger.info(f"✅ Only one H2 under {selected_h1}, no clarification needed")
 
-
-    # ─── 10) Exactly one H2 → drill into H3 (or answer if no children) ──────────
+    # ─── Exactly one H2 → drill into H3 or fallback ──────────
     if len(ordered_h2) == 1:
         h2_key = ordered_h2[0]
         logger.info("🏷 Single H2 chosen: %s", h2_key)
 
+        # Build raw_h3 from the only H2
         raw_h3 = defaultdict(list)
-        for n in nodes:
+        for n in all_doc_nodes:
             path = n.node.metadata.get("section_path", [])
             if len(path) >= 3 and path[1] == h2_key:
                 raw_h3[path[2]].append(n)
-        logger.info("🔍 raw_h3 groups: %s", {h: len(chunks) for h, chunks in raw_h3.items()})
 
-        ordered_h3 = sorted(raw_h3.keys(), key=lambda h: max(c.score for c in raw_h3[h]), reverse=True)
-        logger.info("🔍 ordered_h3: %s", ordered_h3)
+        # If no H3s exist under the H2, return all chunks under H2 directly
+        # If no H3s exist under the H2, fallback to sending all chunks under H2 to LLM
+        if not raw_h3:
+            logger.info("🧩 No H3 found, fallback to all chunks under H2: %s", h2_key)
+            h2_nodes = [
+                n for n in all_doc_nodes
+                if len(n.node.metadata.get("section_path", [])) >= 2
+                and n.node.metadata["section_path"][1] == h2_key
+            ]
+            return await answer_from_node(h2_nodes, orig_q)
 
-        if not ordered_h3:
-            best_chunk = max(raw_h2[h2_key], key=lambda n: n.score)
-            logger.info("✅ No H3 children — answering from H2 chunk: %s", best_chunk.node.metadata.get("section_path"))
-            clear_clarification_state()
-            cl.user_session.set("awaiting_clarification", False)
-            return await answer_from_node(best_chunk, query_with_context)
+        # Otherwise, show all H3s found under that H2
+        cl.user_session.set("awaiting_clarification", True)
+        cl.user_session.set("clarification_level", 3)
+        cl.user_session.set("hier_sections", {title: raw_h3[title] for title in raw_h3})
 
-        if len(ordered_h3) > 1:
-            logger.info("🏷 Showing H3 menu with %d options", len(ordered_h3))
-            cl.user_session.set("awaiting_clarification", True)
-            cl.user_session.set("hier_sections", {h: raw_h3[h] for h in ordered_h3})
-            cl.user_session.set("clarification_level", 3)
-            exit_label = "❌ ถามคำถามใหม่"
-            opts = ordered_h3 + [exit_label]
-            lines = [f"{i+1}. {h}" for i, h in enumerate(opts)]
-            await send_with_feedback(
-                f"❓ โปรดเลือกหัวข้อย่อย (ระดับ 3):\n\n" + "\n".join(lines),
-                author="Customer Service Agent"
-            )
-            return
-
-        # Exactly one H3 child → answer immediately
-        best_chunk = max(raw_h3[ordered_h3[0]], key=lambda n: n.score)
-        logger.info("✅ Single H3 child — answering from chunk: %s", best_chunk.node.metadata.get("section_path"))
-        clear_clarification_state()
-        cl.user_session.set("awaiting_clarification", False)
-        return await answer_from_node(best_chunk, query_with_context)
-
-    # ─── 11) Fuzzy-fallback & final LLM answer ─────────────────────────────────
-    fuzzy_scores = {q: SequenceMatcher(None, message.content.lower(), q.lower()).ratio() for q in predefined_answers}
-    fuzzy_cands = sorted([(q, s) for q, s in fuzzy_scores.items() if s > FUZZY_THRESHOLD], key=lambda x: x[1], reverse=True)
-    best_q, fuzzy_score = fuzzy_cands[0] if fuzzy_cands else ("", 0)
-    if fuzzy_score > top_score:
-        if len(fuzzy_cands) > 1:
-            return await start_clarification_flow([], message.content, fuzzy_cands)
-        answer = predefined_answers[best_q]
-        lvl = "Easy"
+        exit_label = "❌ ถามคำถามใหม่"
+        opts = list(raw_h3.keys()) + [exit_label]
+        lines = [f"{i+1}. {title}" for i, title in enumerate(opts)]
         await send_with_feedback(
-            f"{answer}\n\n🧠 *DEBUG* | Category: **Easy** | Method: **Predefined** | Fuzzy: {fuzzy_score:.2f} | Vector: {top_score:.2f}",
-            metadata={"difficulty": lvl}
+            "❓ โปรดเลือกหัวข้อย่อย (ระดับ 3):\n\n" + "\n".join(lines),
+            author="Customer Service Agent"
         )
-        save_conversation_log(thread_id, message.id, "bot", answer, lvl)
         return
+
+   
 
     # ─── 12) LLM answer ─────────────────────────────────────────────
     ctx2 = "\n".join(m.content for m in memory.get()[-3:] if m.role == "user")
@@ -1453,9 +2480,33 @@ async def handle_standard_query(message: cl.Message):
     await answer_with_llm(nodes, final_q, lvl, top_score, fuzzy_score)
 
     # ─── 13) Reset for next new question ─────────────────────────────────
+    # ─── 13) Reset for next new question ─────────────────────────────────
     clear_clarification_state()
-    cl.user_session.set("awaiting_clarification", False)
-    cl.user_session.set(PRE_DRILL_KEY, False)
+
+    # 🧹 Clear all related session state
+    for key in [
+        "awaiting_clarification",
+        PRE_DRILL_KEY,
+        AWAITING_PRE_DRILL,
+        "pre_drill_nodes",
+        "pre_drill_query",
+        DOC_CHOICES_KEY,
+        "filtered_nodes",
+        "hier_sections",
+        "clarification_level",
+        "policy_auto_select",
+        "auto_skipped",
+        "current_doc",
+        "original_user_question",
+        "selected_bu",
+        "awaiting_bu_selection",
+    ]:
+        if key in ("awaiting_clarification", PRE_DRILL_KEY, AWAITING_PRE_DRILL, "awaiting_bu_selection"):
+            cl.user_session.set(key, False)
+        else:
+            cl.user_session.set(key, None)
+
+    # 💬 Inform the user in the chat window
 
 async def start_clarification_flow(nodes: list, original_query: str, fuzzy_candidates: list = None):
     """Initiates the clarification process when a query is too broad."""
@@ -1614,6 +2665,18 @@ async def answer_with_llm(nodes: list, query: str, level: str, top_score: float,
         for n in selected_nodes
     ]
 
+    # 🔪 Split any long chunk using heading markers like "#", "##"
+    split_contexts = []
+    for src, txt in contexts:
+        sub_chunks = re.split(r"(?=^#+ )", txt, flags=re.MULTILINE)  # split at "#", "##", etc.
+        for chunk in sub_chunks:
+            clean_chunk = chunk.strip()
+            if clean_chunk:
+                split_contexts.append((src, clean_chunk))
+
+    # Replace the original contexts
+    contexts = split_contexts
+    
     # Build chunk context
     chunk_context = "".join(
         f'({i}) เอกสารนโยบาย: "{src}"\n'
@@ -1711,22 +2774,13 @@ async def answer_with_llm(nodes: list, query: str, level: str, top_score: float,
         final_answer,
         level
     )
+    cl.user_session.set("reset_memory_next_turn", True)
 
-    # ─── Auto‐clear entire chat memory after LLM reply ───
-    thread_id = cl.context.session.thread_id
-    user_id   = cl.user_session.get("user").identifier
-    redis_key = f"{user_id}:{thread_id}"
-    redis_client.delete(redis_key)
-    fresh_mem = ChatMemoryBuffer.from_defaults(
-        token_limit=TOKEN_LIMIT,
-        chat_store=chat_store,
-        chat_store_key=redis_key,
-    )
-    cl.user_session.set("memory", fresh_mem)
 
     # Reset any leftover hierarchical state
     cl.user_session.set("clarification_level", None)
     cl.user_session.set("filtered_nodes", None)
+    
     
 # ======================================================================================
 # Background Tasks (Admin Replies)
