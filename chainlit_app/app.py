@@ -159,12 +159,20 @@ BU_DOCUMENT_MAP = {
 }
 
 # Redis Client
-# Use TLS-enabled URL directly
 redis_client = redis.Redis.from_url(
     REDIS_CHATSTORE_URI,
     decode_responses=True  # Optional: returns strings instead of bytes
 )
 
+"""
+#parsed_redis_url = urlparse(REDIS_CHATSTORE_URI)
+redis_client = redis.Redis(
+    host=parsed_redis_url.hostname,
+    port=parsed_redis_url.port or 6379,
+    password=REDIS_CHATSTORE_PASSWORD,
+    db=0,
+)
+"""
 
 # Phoenix Tracer
 tracer_provider = register(
@@ -575,6 +583,9 @@ async def answer_from_node(node_or_nodes, user_q):
     cl.user_session.set("awaiting_clarification", False)
     memory = cl.user_session.get("memory")
     chat_history = ""
+    if memory and user_q:
+        logger.info("💬 Appending user message to memory: %s", user_q)
+        memory.put(ChatMessage(role="user", content=user_q))
     if memory:
         recent_messages = memory.get()[-6:]  # ✅ Get last 3 messages only
         for msg in recent_messages:
@@ -648,6 +659,15 @@ async def answer_from_node(node_or_nodes, user_q):
 
     answer = extract_and_format_table(answer.strip())
     final = f"✅ นี่คือสิ่งที่พบจาก “{source}”:\n\n{answer}"
+    if memory:
+        logger.info("🤖 Appending assistant answer to memory")
+        memory.put(ChatMessage(role="assistant", content=final))
+        
+        # ✅ Add this for debugging
+        recent = memory.get()[-4:]
+        logger.info("🧠 Memory after LLM response:")
+        for msg in recent:
+            logger.info(f"MessageRole.{msg.role.upper()}: {msg.content}")
 
     # Send and log the response
     await send_with_feedback(final, metadata={"difficulty": "Clarified"})
@@ -1126,21 +1146,38 @@ async def on_message(message: cl.Message):
     # ✅ Append new message to memory
     # ✅ Only log raw user input if not in clarification mode
     # ✅ Always append user message to memory (unless it's a reset trigger)
+    # ✅ Reset memory if flagged by previous assistant turn
+    if cl.user_session.get("reset_memory_next_turn"):
+        cl.user_session.set("reset_memory_next_turn", False)
+        user_id = cl.user_session.get("user").identifier
+        redis_key = f"{user_id}:{thread_id}"
+        memory = ChatMemoryBuffer.from_defaults(
+            token_limit=TOKEN_LIMIT,
+            chat_store=chat_store,
+            chat_store_key=redis_key
+        )
+        cl.user_session.set("memory", memory)
+        logger.info("🧹 Reset chat memory due to previous LLM turn.")   
     awaiting_clarification = cl.user_session.get("awaiting_clarification", False)
 
     if awaiting_clarification:
-        logger.info("⚠️ Skipping raw input from memory due to clarification mode.")
+        if cl.user_session.get("clarification_just_exited", False):
+            logger.info("✅ Clarification just exited — allow saving user input.")
+            memory.put(ChatMessage(role="user", content=text))
+            cl.user_session.set("clarification_just_exited", False)
+        else:
+            logger.info("⚠️ Skipping raw input from memory due to clarification mode.")
     else:
         if text not in ("0", "❌ ถามคำถามใหม่"):
             memory.put(ChatMessage(role="user", content=text))
             logger.info(f"✅ Appended to memory: {text}")
-            logger.info(f"🧠 Memory object ID: {id(memory)}")
+        
 
             # ✅ Log updated memory state only after appending
             logger.info("🧠 Memory after appending new user message:")
             for i, msg in enumerate(memory.get()):
                 logger.info(f"[{i}] {msg.role.upper()}: {msg.content}")
-    logger.info(f"🧠 Memory object ID: {id(memory)}")
+
     
     if cl.user_session.get("selected_bu") is None and not cl.user_session.get("awaiting_bu_selection"):
         logger.info("💡 First user message with no BU selected → ask for BU")
@@ -1167,6 +1204,7 @@ async def on_message(message: cl.Message):
             logger.warning("⚠️ Non-numeric BU input")
             await cl.Message(content="⚠️ โปรดระบุหมายเลขของ BU ที่ต้องการ").send()
             return
+
 
     # ─── Global “start new conversation” shortcut ───
     if text == "0" or text == "❌ ถามคำถามใหม่":
@@ -1205,18 +1243,26 @@ async def on_message(message: cl.Message):
                 cl.user_session.set(key, None)
 
         # Wipe Redis-backed memory
+        # Wipe Redis-backed memory
         thread_id = cl.context.session.thread_id
         user_id = cl.user_session.get("user").identifier
         redis_key = f"{user_id}:{thread_id}"
-        redis_client.delete(redis_key)
 
-        # Reinitialize memory
+        # 🧹 Delete from Redis
+        redis_client.delete(redis_key)
+        logger.info("🧹 Redis chat store key deleted")
+
+        # 🧠 Clear local reference to memory
+        cl.user_session.set("memory", None)
+
+        # 🔄 Re-initialize fresh memory object
         fresh_mem = ChatMemoryBuffer.from_defaults(
             token_limit=TOKEN_LIMIT,
             chat_store=chat_store,
             chat_store_key=redis_key
         )
         cl.user_session.set("memory", fresh_mem)
+        logger.info("🧠 Fresh memory buffer initialized")
 
         # ✅ Inform user in the conversation
         await cl.Message(
@@ -1259,7 +1305,12 @@ async def on_message(message: cl.Message):
 async def handle_clarification_response(message: cl.Message):
     """Handles user's response during a clarification flow, including hierarchical clarification."""
     # ─── Hierarchical pick response ───
-
+    # ✅ Append clarified input to memory manually
+    memory = cl.user_session.get("memory")
+    if memory:
+        memory.put(ChatMessage(role="user", content=message.content.strip()))
+        logger.info(f"✅ Appended clarified message to memory: {message.content.strip()}")
+        
     if cl.user_session.get("awaiting_clarification"):
         sections: Dict[str, List] = cl.user_session.get("hier_sections", {})
         titles = list(sections.keys())
@@ -1526,6 +1577,7 @@ async def show_h1_options(message):
     h1_options = cl.user_session.get("h1_options") or []
     exit_label = "❌ ถามคำถามใหม่"
     opts = h1_options + [exit_label]
+    logger.info(f"📋 Final H1s shown to user: {h1_options}")
 
     lines = [f"{i+1}. {title}" for i, title in enumerate(opts)]
     text = "❓ โปรดเลือกหัวข้อหลัก (ระดับ 1):\n\n" + "\n".join(lines)
@@ -1677,6 +1729,13 @@ async def handle_standard_query(message: cl.Message):
             logger.info("📁 Filtered doc list for BU=%s → %s", selected_bu, allowed_docs)
 
         cl.user_session.set("pre_drill_nodes", all_nodes)
+        # 🔍 Log H1 nodes and their scores
+        logger.info("🧠🧠🧠🧠 Top nodes and their H1 section scores:")
+        for n in all_nodes:
+            path = n.node.metadata.get("section_path", [])
+            h1 = path[0] if len(path) > 0 else "❓ Missing H1"
+            score = n.score if hasattr(n, "score") else 0.0
+            logger.info(f"   • H1: {h1} | Score: {score:.3f}")
 
         # Log each document’s best score
         doc_scores = {}
@@ -1965,7 +2024,7 @@ async def handle_standard_query(message: cl.Message):
                 author="Customer Service Agent"
                 
             )
-            logger.info("🧠 Current chat memory state: %s", cl.user_session.to_dict())
+            logger.info("🧠 Current chat memory state: %s", dict(cl.user_session._data))
             return
 
         # H3 → answer immediately
@@ -2231,7 +2290,7 @@ async def handle_standard_query(message: cl.Message):
                     return
 
     # 6c) Auto‐answer if extremely confident
-    VECTOR_AUTO_DIRECT_THRESHOLD = 0.62 
+    VECTOR_AUTO_DIRECT_THRESHOLD = 0.63 
     if depth >= 2 and top_score >= VECTOR_AUTO_DIRECT_THRESHOLD:
         logger.info(
             "✅ Auto-answer triggered at depth %d (score %.3f)",
@@ -2296,9 +2355,19 @@ async def handle_standard_query(message: cl.Message):
 
         if score_gap < 0.08:  # not a big gap, means ambiguity
             cl.user_session.set("drill_level", "h1")
-            cl.user_session.set("h1_options", [h1 for h1, _ in ordered_h1[:5]])
+
+            # Filter H1s with score > 0.5
+            filtered_h1s = [h1 for h1, score in ordered_h1 if score > 0.52]
+
+            # Fallback: if none match, force top 3
+            if not filtered_h1s:
+                filtered_h1s = [h1 for h1, _ in ordered_h1[:3]]
+
+            # ❗ Ensure this is what gets used
+            cl.user_session.set("h1_options", filtered_h1s)
             cl.user_session.set("pre_drill_query", current_q)
             cl.user_session.set("pre_drill_nodes", all_doc_nodes)
+
             return await show_h1_options(message)
 
     # Collect every H2 under that H1, regardless of retrieval score
@@ -2692,22 +2761,27 @@ async def answer_with_llm(nodes: list, query: str, level: str, top_score: float,
         for i, (src, txt) in enumerate(contexts, 1)
     )
 
-    # Include prior messages from memory
+    # Include prior messages from memory (last 3 user-assistant pairs)
     memory = cl.user_session.get("memory")
-    prior_messages = memory.get()[-5:]
+    prior_messages = memory.get()
+
+    # Grab last 3 pairs = 6 messages max (assuming U-A-U-A-U-A)
+    dialogue = prior_messages[-6:]
     history_snippets = ""
-    for m in prior_messages:
-        if m.role == "user":
-            history_snippets += f"👤 ผู้ใช้: {m.content.strip()}\n"
-        elif m.role == "assistant":
-            history_snippets += f"🤖 บอท: {m.content.strip()}\n"
+    for m in dialogue:
+        role = "👤 ผู้ใช้" if m.role == "user" else "🤖 ผู้ช่วย"
+        history_snippets += f"{role}: {m.content.strip()}\n"
+
+    # Get the final user message to display as key intent
+    last_user_msg = next((m.content for m in reversed(dialogue) if m.role == "user"), "")
 
     logger.info("🧠 Chat Memory Used in Prompt:")
-    for m in prior_messages:
+    for m in dialogue:
         logger.info(f"{m.role}: {m.content.strip()}")
 
     context_str = (
-        f"📜 ประวัติการสนทนา:\n{history_snippets}\n\n"
+        f"📜 ประวัติการสนทนา:\n{history_snippets.strip()}\n\n"
+        f"📌 คำถามหลักจากผู้ใช้: \"{last_user_msg}\"\n\n"
         f"📚 ข้อความจากเอกสาร:\n{chunk_context}"
     )
 
@@ -2726,14 +2800,16 @@ async def answer_with_llm(nodes: list, query: str, level: str, top_score: float,
         "และอย่าอ้างอิงเนื้อหาในส่วนอื่นๆ"
     )
 
+    last_user_msg = next((m.content for m in reversed(prior_messages) if m.role == "user"), query)
     filtered_query = (
-        f'คำถามจากผู้ใช้งาน: "{query}"\n\n'
+        f'📌 คำถามหลักจากผู้ใช้: "{last_user_msg}"\n\n'
         "กรุณาจัดทำคำตอบโดยอ้างอิงจากเนื้อหาทั้งหมดที่ให้ไว้ด้านล่างนี้อย่างครบถ้วนและถูกต้อง:\n\n"
         f"{context_str}"
         f"{formatting_hint}"
         f"{constraint}\n\n"
         "โปรดให้คำตอบอย่างชัดเจน ถูกต้อง และเป็นทางการ โดยระบุชื่อเอกสารนโยบายหรือแหล่งอ้างอิงที่ใช้ในการตอบทุกครั้ง\n"
         "หากไม่พบข้อมูลเพียงพอในเนื้อหาที่ให้ไว้ หรือมีความไม่แน่ใจ กรุณาตอบกลับเพื่อขอข้อมูลเพิ่มเติมจากผู้ใช้งานก่อนตอบ"
+        "\n\n⛔ ห้ามสร้างคำตอบจากความเข้าใจส่วนตัวหรือข้อมูลภายนอกเด็ดขาด หากไม่มีข้อมูลในเนื้อหาที่ให้ไว้ ให้ขอข้อมูลเพิ่มเติมแทน"
     )
 
     # ─── Start the thinking animation ───
