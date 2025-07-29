@@ -577,77 +577,124 @@ def clear_clarification_state():
         cl.user_session.set(key, None)
 
 
-async def answer_from_node(node_or_nodes, user_q):
-    """Builds and sends the final LLM response from one or more selected nodes with a loading animation."""
+async def answer_from_node(node_or_nodes, user_q: str):
     clear_clarification_state()
     cl.user_session.set("awaiting_clarification", False)
+
     memory = cl.user_session.get("memory")
     chat_history = ""
-    if memory and user_q:
-        logger.info("💬 Appending user message to memory: %s", user_q)
-        memory.put(ChatMessage(role="user", content=user_q))
+    for m in memory.get():
+        if m.role == "user":
+            chat_history += f"\nUSER: {m.content.strip()}"
+        elif m.role == "assistant":
+            chat_history += f"\nASSISTANT: {m.content.strip()}"
+    latest_user_q = ""
+
+    if memory is None:
+        logger.warning("⚠️ No memory object found in session.")
+        return  # 🛑 Don't proceed if memory doesn't exist
+
+    # ✅ Wait briefly in case memory was just written to
+    await asyncio.sleep(0.05)  # Optional, helps with write latency
+
+    # ✅ Build recent chat history
+    all_messages = memory.get()
+    filtered = [
+        m for m in all_messages
+        if m.role in {"user", "assistant"}
+        and not m.content.strip().isdigit()
+        and not m.content.strip().lower().startswith("clarified:")
+        and len(m.content.strip()) > 3
+    ]
+
+    # ✅ Extract latest 6 messages
+    recent_messages = filtered[-6:]
+    for msg in recent_messages:
+        role = "👤 ผู้ใช้" if msg.role == "user" else "🤖 ผู้ช่วย"
+        chat_history += f"{role}: {msg.content.strip()}\n"
+
+    # ✅ Latest user message (excluding Clarified:)
+    latest_user_q = None
+    memory = cl.user_session.get("memory")
+
     if memory:
-        recent_messages = memory.get()[-6:]  # ✅ Get last 3 messages only
-        for msg in recent_messages:
-            role = "👤 ผู้ใช้" if msg.role == "user" else "🤖 ผู้ช่วย"
-            chat_history += f"{role}: {msg.content.strip()}\n"
-
-    orig_q = cl.user_session.get("original_user_question")
-    runnable = cl.user_session.get("runnable")
-
-    # Ensure input is a list of nodes
-    if isinstance(node_or_nodes, list):
-        nodes = node_or_nodes
+        for m in reversed(memory.get()):
+            if m.role == "user":
+                content = m.content.strip()
+                if content and not content.lower().startswith("clarified:") and not content.isdigit():
+                    latest_user_q = content
+                    break
     else:
-        nodes = [node_or_nodes]
+        logger.warning("⚠️ No memory found in session.")
 
-    # Log the number of chunks being sent
+
+    logger.info(f"📜 chat_history =\n{memory}")
+    logger.info(f"📌 latest_user_q = {latest_user_q}")
+    logger.info(f"📌 original_user_question = {cl.user_session.get('original_user_question')}")
+
+    # 🧠 Proceed with prompt building...
+
+    # ✅ Retrieve the LLM runnable
+    runnable = cl.user_session.get("runnable")
+    if runnable is None:
+        logger.error("❌ 'runnable' is not set in user session!")
+        await cl.Message("เกิดข้อผิดพลาดภายในระบบ ไม่สามารถตั้งค่า LLM ได้").send()
+        return
+
+    # ✅ Normalize node list
+    nodes = node_or_nodes if isinstance(node_or_nodes, list) else [node_or_nodes]
     logger.info(f"📚 Preparing to answer with {len(nodes)} chunk(s) from source.")
 
-    # Build full text from all selected chunks
+    # ✅ Combine text
     full_text = "\n\n".join(n.node.text.strip().replace("\n", " ") for n in nodes)
     source = nodes[0].node.metadata.get("source", "Unknown")
-
     logger.info(f"📄 Answer source: {source}")
     logger.info(f"📦 Combined chunk text length: {len(full_text)} characters")
 
-    # Build the LLM prompt
-    section_titles = [n.node.metadata.get("section_path", [])[-1] for n in nodes]
-    section_str = " / ".join(section_titles)
-    # Track selection path (e.g., H1 → H2 → H3)
+    # ✅ Build section path
     full_paths = [n.node.metadata.get("section_path", []) for n in nodes]
+    section_titles = [p[-1] for p in full_paths if p]
+    section_str = " / ".join(section_titles)
+
+    # ✅ Track full section selection path
+    selection_path = cl.user_session.get("selection_path") or []
     if full_paths:
-        # Choose the most complete section path
         deepest_path = max(full_paths, key=lambda p: len(p))
-        selection_path = cl.user_session.get("selection_path") or []
-        selection_path.append(" / ".join(deepest_path))
+        path_str = " / ".join(deepest_path)
+        if path_str not in selection_path:
+            selection_path.append(path_str)
         cl.user_session.set("selection_path", selection_path)
         logger.info(f"📌 Updated selection path memory: {selection_path}")
+    memory = cl.user_session.get("memory")
+    if memory:
+        history = memory.get()
+        chat_history = "\n".join([f"{m.role.upper()}: {m.content}" for m in history])
+        logger.info(f"📜 ประวัติการสนทนา:\n{chat_history}\n\n")
+    else:
+        logger.warning("⚠️ No memory found. Cannot show chat history.")
 
     path_history_str = "\n".join(f"👉 {p}" for p in selection_path)
-
-    # Build the LLM prompt using selection path
+    original_user_question = cl.user_session.get("original_user_question")
+    # ✅ Construct prompt
     prompt = (
         f"📜 ประวัติการสนทนา:\n{chat_history}\n\n"
-        f'📌 คำถามหลักจากผู้ใช้: "{orig_q}"\n\n'
-        f'🧭 เส้นทางการเลือกหัวข้อของผู้ใช้:\n{path_history_str}\n\n'
-        f'📚 หัวข้อที่เกี่ยวข้อง: {section_str}\n'
+        f'📌 คำถามหลักจากผู้ใช้: "{original_user_question}"\n\n'
         f'📄 เอกสารนโยบาย: "{source}"\n\n'
         f'เนื้อหาที่เกี่ยวข้องมีดังนี้:\n"""{full_text}\n"""\n\n'
         "กรุณาตอบโดยอ้างอิงรายละเอียดทั้งหมดจากเนื้อหานี้อย่างครบถ้วนและระบุเงื่อนไขที่เกี่ยวข้องให้ชัดเจน "
         "หากมีกรณีหรือเงื่อนไขพิเศษ โปรดแสดงให้ครบทุกกรณี เช่น “ถ้า…ให้…” หรือ “ในกรณีที่…ต้อง…” "
         "และอย่าสรุปรวมหลายเงื่อนไขเป็นบรรทัดเดียว"
     )
-    
     logger.info(f"🧠 Final LLM prompt = \n{prompt}")
 
-    # Loading animation
+    # ✅ Loading animation
     frames = ["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"]
     animation_task = asyncio.create_task(
         send_animated_message("กำลังเช็ค Policy ให้อยู่ รอสักครู่นะคะ …", frames, interval=0.3)
     )
     logger.info("🔄 Starting loading animation for answer_from_node")
 
+    # ✅ Run LLM
     try:
         loop = asyncio.get_event_loop()
         resp = await loop.run_in_executor(None, runnable.query, prompt)
@@ -656,14 +703,24 @@ async def answer_from_node(node_or_nodes, user_q):
         animation_task.cancel()
         with suppress(asyncio.CancelledError):
             await animation_task
+    # Save assistant reply to memory
+    memory = cl.user_session.get("memory")
+    if memory:
+        memory.put(ChatMessage(role="assistant", content=answer))
+        logger.info(f"✅ Assistant reply saved to memory: {answer}")
 
     answer = extract_and_format_table(answer.strip())
     final = f"✅ นี่คือสิ่งที่พบจาก “{source}”:\n\n{answer}"
+
+    # ✅ Save assistant response
     if memory:
         logger.info("🤖 Appending assistant answer to memory")
         memory.put(ChatMessage(role="assistant", content=final))
+        logger.info("🧠 Memory after LLM response:")
+        for msg in memory.get()[-4:]:
+            logger.info(f"MessageRole.{msg.role.upper()}: {msg.content}")
 
-    # Send and log the response
+    # ✅ Send + log
     await send_with_feedback(final, metadata={"difficulty": "Clarified"})
     save_conversation_log(
         cl.context.session.thread_id,
@@ -672,7 +729,6 @@ async def answer_from_node(node_or_nodes, user_q):
         answer,
         difficulty="Clarified"
     )
-    
     cl.user_session.set("reset_memory_next_turn", True)
 
 # ======================================================================================
@@ -1125,11 +1181,13 @@ async def on_message(message: cl.Message):
     # ✅ Log incoming message
     save_conversation_log(thread_id, message.id, role="user", content=text)
 
-    # ✅ Ensure memory exists
+    # ✅ Ensure memory exists and is reused
+    thread_id = cl.user_session.get("thread_id")
+    user_id = cl.user_session.get("user").identifier
+    redis_key = f"{user_id}:{thread_id}"
+
     memory = cl.user_session.get("memory")
     if memory is None:
-        user_id = cl.user_session.get("user").identifier
-        redis_key = f"{user_id}:{thread_id}"
         memory = ChatMemoryBuffer.from_defaults(
             token_limit=TOKEN_LIMIT,
             chat_store=chat_store,
@@ -1137,17 +1195,32 @@ async def on_message(message: cl.Message):
         )
         cl.user_session.set("memory", memory)
 
-    # ✅ Append new message to memory
-    # ✅ Only log raw user input if not in clarification mode
-    # ✅ Always append user message to memory (unless it's a reset trigger)
+    # 💡 Always reassign to Settings.memory to ensure LLM sees the latest buffer
+    Settings.memory = memory
+
+
+    # ✅ Reset memory if flagged by previous assistant turn
+    # ✅ Optional memory reset — only if explicitly triggered (e.g. user typed 0 earlier)
+    if cl.user_session.get("reset_memory_next_turn"):
+        cl.user_session.set("reset_memory_next_turn", False)
+        
+        logger.info("⚠️ Skipped memory reset — using existing memory for continuity.")
+        # Do NOT reinitialize memory here
+    else:
+        logger.info("✅ Reusing memory for thread %s", thread_id)
     awaiting_clarification = cl.user_session.get("awaiting_clarification", False)
 
     if awaiting_clarification:
-        logger.info("⚠️ Skipping raw input from memory due to clarification mode.")
+        if text not in ("0", "❌ ถามคำถามใหม่") and not text.isdigit():
+            memory.put(ChatMessage(role="user", content=text))
+            logger.info(f"✅ Appended clarification input to memory: {text}")
+        else:
+            logger.info(f"⚠️ Skipped clarification input: {text}")
     else:
         if text not in ("0", "❌ ถามคำถามใหม่"):
             memory.put(ChatMessage(role="user", content=text))
-            logger.info(f"✅ Appended to memory: {text}")
+            logger.info(f"✅ Appended normal input to memory: {text}")
+
         
 
             # ✅ Log updated memory state only after appending
@@ -1220,18 +1293,26 @@ async def on_message(message: cl.Message):
                 cl.user_session.set(key, None)
 
         # Wipe Redis-backed memory
+        # Wipe Redis-backed memory
         thread_id = cl.context.session.thread_id
         user_id = cl.user_session.get("user").identifier
         redis_key = f"{user_id}:{thread_id}"
-        redis_client.delete(redis_key)
 
-        # Reinitialize memory
+        # 🧹 Delete from Redis
+        redis_client.delete(redis_key)
+        logger.info("🧹 Redis chat store key deleted")
+
+        # 🧠 Clear local reference to memory
+        cl.user_session.set("memory", None)
+
+        # 🔄 Re-initialize fresh memory object
         fresh_mem = ChatMemoryBuffer.from_defaults(
             token_limit=TOKEN_LIMIT,
             chat_store=chat_store,
             chat_store_key=redis_key
         )
         cl.user_session.set("memory", fresh_mem)
+        logger.info("🧠 Fresh memory buffer initialized")
 
         # ✅ Inform user in the conversation
         await cl.Message(
@@ -1255,13 +1336,19 @@ async def on_message(message: cl.Message):
         await send_with_feedback("⚠️ System not ready. Please try again later.")
         return
 
-    # Only set the original user question once
-    if cl.user_session.get("original_user_question") is None:
-        cl.user_session.set("original_user_question", message.content.strip())
+
+    text = message.content.strip()
 
     if cl.user_session.get("awaiting_clarification"):
-        await handle_clarification_response(message)
+        await handle_clarification_response(message, text)
     else:
+        # ✅ Only overwrite if it's not a digit and longer than 3 chars
+        if not text.isdigit() and len(text) > 3:
+            cl.user_session.set("original_user_question", text)
+            logger.info(f"📌 Overwrote original_user_question with new user input: {text}")
+        else:
+            logger.info(f"📎 Skip setting original_user_question — input was digit or too short: {text}")
+
         await handle_standard_query(message)
 
 
@@ -1271,10 +1358,15 @@ async def on_message(message: cl.Message):
 # Message Handling Logic
 # ======================================================================================
 
-async def handle_clarification_response(message: cl.Message):
+async def handle_clarification_response(message: cl.Message, text: str):
     """Handles user's response during a clarification flow, including hierarchical clarification."""
     # ─── Hierarchical pick response ───
-
+    # ✅ Append clarified input to memory manually
+    memory = cl.user_session.get("memory")
+    if memory:
+        memory.put(ChatMessage(role="user", content=message.content.strip()))
+        logger.info(f"✅ Appended clarified message to memory: {message.content.strip()}")
+        
     if cl.user_session.get("awaiting_clarification"):
         sections: Dict[str, List] = cl.user_session.get("hier_sections", {})
         titles = list(sections.keys())
@@ -1342,7 +1434,6 @@ async def handle_clarification_response(message: cl.Message):
 
         # ✅ Save clarified user choice to memory
         memory = cl.user_session.get("memory")
-        original_q = cl.user_session.get("original_user_question") or message.content
         memory.put(ChatMessage(role="user", content=f"Clarified: {selected_title}"))
         logger.info(f"🔍 Hierarchical: user picked “{selected_title}” with {len(selected_nodes)} chunks")
         cl.user_session.set("filtered_nodes", selected_nodes)
@@ -1354,6 +1445,7 @@ async def handle_clarification_response(message: cl.Message):
         cl.user_session.set("clarification_level", clar_level + 1)
 
         # Re-run standard query on filtered nodes
+        
         return await handle_standard_query(message)
     # ─── End hierarchical pick response ───
 
@@ -1412,7 +1504,7 @@ async def handle_clarification_response(message: cl.Message):
         chosen = max(nodes_to_consider, key=lambda n: n.score)
         logger.info(f"[clarify] User requested auto, selecting node with score {chosen.score:.2f}")
         clear_clarification_state()
-        return await answer_from_node(chosen, original_query)
+        return await answer_from_node(chosen, user_q=text)
 
     # Determine selected index for summaries
     selected_index = None
@@ -1553,12 +1645,89 @@ async def show_h1_options(message):
     ).send()
 
 
+
+
+async def is_broad_but_clear_question_llm(question: str) -> bool:
+    """Ask the LLM if the question is a general policy-level question that should skip clarification."""
+    llm = get_llm_settings(cl.user_session.get("chat_profile"))
+    prompt = (
+        f'User asked: "{question}"\n\n'
+        "Is this a broad, general policy-level question that can be answered directly from high-level documents "
+        "without needing the user to clarify further? , if it is, answer 'Yes'\n\n"
+        "If the question includes numbers, money, approvals, conditions, or payment logic — answer 'No'.\n\n"
+        "Answer only with 'Yes' or 'No'."
+    )
+    try:
+        resp = llm.chat([ChatMessage(role="user", content=prompt)])
+        answer = resp.message.content.strip().lower()
+
+        logger.info(f"🧠 [Broad Q Check] LLM response: '{answer}' for question: '{question}'")
+
+        return answer == "yes"
+    except Exception as e:
+        logger.warning(f"LLM general-question check failed: {e}")
+        return False
+    
+    
+
+        
 async def handle_standard_query(message: cl.Message):
     import re
     from collections import defaultdict
     from difflib import SequenceMatcher
     import statistics
-    current_q = message.content.strip()
+    text = message.content.strip()
+    current_q = text
+    
+
+    # ─── Pull last few turns from Chainlit memory ───
+    # ─── Ensure memory is available ─────────────────────────────
+    memory = cl.user_session.get("memory")
+    if not memory:
+        logger.warning("⚠️ Memory not found. Initializing fallback.")
+        user = cl.user_session.get("user")
+        thread_id = cl.context.session.thread_id
+        redis_session_id = f"{user.identifier}:{thread_id}"
+        memory = ChatMemoryBuffer.from_defaults(
+            token_limit=TOKEN_LIMIT,
+            chat_store=chat_store,
+            chat_store_key=redis_session_id
+        )
+        cl.user_session.set("memory", memory)
+
+    # ─── Build contextual query from memory ─────────────────────
+    
+    last_msgs = memory.get()[-6:]  # or tweak number if needed
+    contextual_query = "\n".join(
+        [f"{m.role.capitalize()}: {m.content}" for m in last_msgs] + [f"User: {current_q}"]
+    )
+
+    logger.info("📌📌📌📌📌📌📌 Full contextual query:")
+    for m in last_msgs:
+        logger.info(f"MessageRole.{m.role.upper()}: {m.content}")
+    logger.info(f"MessageRole.USER (current): {current_q}")
+    
+    # ─── Session state ───
+    original_q = cl.user_session.get("original_user_question")
+    clarifying = cl.user_session.get("awaiting_clarification")
+    drilling   = cl.user_session.get("drill_level") is not None
+    logger.info(f"🧩 Session state | original_q={original_q} | clarifying={clarifying} | drilling={drilling}")
+
+
+
+    
+    # ─── Early: Ensure original_user_question is set only on real question ───
+    already_set = cl.user_session.get("original_user_question") is not None
+    drilling = cl.user_session.get("drill_level") is not None
+    clarifying = cl.user_session.get("awaiting_clarification")
+    looks_like_real_question = len(text) > 3 and not text.isdigit()
+
+    if not already_set and looks_like_real_question and not drilling and not clarifying:
+        cl.user_session.set("original_user_question", text)
+        logger.info(f"📌 Set new original_user_question = {text}")
+    else:
+        logger.info(f"📎 Skip setting original_user_question — already set or in clarification/drill mode: {text}")
+
 
     # ─── Ensure memory ──────────────────────────────────────────
     memory = cl.user_session.get("memory")
@@ -1574,10 +1743,20 @@ async def handle_standard_query(message: cl.Message):
         )
         cl.user_session.set("memory", memory)
 
+    # ─── Decide whether to save this to memory ─────────────────
+    clarification_mode = cl.user_session.get("awaiting_clarification")
+    clarification_just_exited = cl.user_session.get("clarification_just_exited")
 
+    if not clarification_mode and not clarification_just_exited:
+        memory.put(ChatMessage(role="user", content=current_q))
+        logger.info(f"🧠 Appendeds to memory: {current_q}")
+    else:
+        logger.info("📌 Skipped appending to memory due to clarification flow")
 
-    # ─── Add user message to memory ─────────────────────────────
-    # memory.put(ChatMessage(role="user", content=current_q))
+    # Always reset clarification exit flag once handled
+    cl.user_session.set("clarification_just_exited", False)
+
+    # ─── Debug log memory ──────────────────────────────────────
     logger.info("🧠 Memory after input:")
     for m in memory.get():
         logger.info(f"{m.role}: {m.content}")
@@ -1587,8 +1766,9 @@ async def handle_standard_query(message: cl.Message):
     prev_q = cl.user_session.get("pre_drill_query")
     original_q = current_q
     orig_q = current_q
+    
 
-    #cl.user_session.set("original_user_question", current_q)
+
     if cl.user_session.get("drill_level") == "h1":
         h1_options = cl.user_session.get("h1_options") or []
         user_input = message.content.strip()
@@ -1609,25 +1789,36 @@ async def handle_standard_query(message: cl.Message):
             cl.user_session.set("drill_level", None)
             cl.user_session.set("selected_h1", selected_h1)
 
-            # Immediately continue to H2 selection using the filtered H1 chunks
+            # Filter all chunks under selected H1
             doc_nodes = cl.user_session.get("pre_drill_nodes") or []
             filtered_nodes = [
                 n for n in doc_nodes
                 if (path := n.node.metadata.get("section_path", [])) and len(path) >= 2 and path[0] == selected_h1
             ]
-
-            cl.user_session.set("selected_h1", selected_h1)
             cl.user_session.set("h1_filtered_nodes", filtered_nodes)
 
-            # 🧠 Run the same handler again, now with drill_level cleared and H1 locked
-            
+            # 🧠 Ensure original_user_question is cached from pre_drill_query
+            if cl.user_session.get("original_user_question") is None:
+                pre_q = cl.user_session.get("pre_drill_query")
+                if pre_q and len(pre_q.strip()) > 3 and not pre_q.strip().isdigit():
+                    cl.user_session.set("original_user_question", pre_q)
+                    logger.info(f"📌 Backfilled original_user_question from pre_drill_query = {pre_q}")
+            else:
+                logger.info(f"📎 original_user_question already set = {cl.user_session.get('original_user_question')}")
+
             return await handle_standard_query(message)
 
-            
         else:
-            logger.warning("❌ Invalid H1 input: %s", user_input)
+            # 🔒 Only set original_user_question if not in H1 drill and no valid selection
+            text = message.content.strip()
+            is_valid_question = len(text) > 3 and not text.isdigit()
+            if cl.user_session.get("original_user_question") is None and is_valid_question:
+                cl.user_session.set("original_user_question", text)
+                logger.info(f"📌 Set new original_user_question = {text}")
+            else:
+                logger.info(f"📎 original_user_question already set = {cl.user_session.get('original_user_question')}")
 
-            # NEW: Heuristic fallback — treat it as new question if it looks like a real sentence
+            # 🧠 Fallback: treat it as a new question if it looks like one
             if len(user_input) > 10 and not user_input.isdigit():
                 logger.info("🧠 User likely typed a real question, exiting H1 drill mode.")
                 cl.user_session.set("drill_level", None)
@@ -1636,7 +1827,6 @@ async def handle_standard_query(message: cl.Message):
 
             await cl.Message("❌ ไม่พบหัวข้อที่คุณเลือก โปรดลองอีกครั้ง หรือพิมพ์ 0 เพื่อเริ่มใหม่").send()
             return
-
     
      # ─── 11) Fuzzy-fallback & final LLM answer ─────────────────────────────────
         # ─── 4) Prepare retrieval █────────────────────────────────────
@@ -1680,7 +1870,7 @@ async def handle_standard_query(message: cl.Message):
             ),
         )
 
-        all_nodes = pre_drill_retriever.retrieve(original_q)
+        all_nodes = pre_drill_retriever.retrieve(contextual_query)
 
         # Enforce BU filtering at pre-drill stage
         selected_bu = cl.user_session.get("selected_bu") or "ALL"
@@ -1693,6 +1883,13 @@ async def handle_standard_query(message: cl.Message):
             logger.info("📁 Filtered doc list for BU=%s → %s", selected_bu, allowed_docs)
 
         cl.user_session.set("pre_drill_nodes", all_nodes)
+        # 🔍 Log H1 nodes and their scores
+        logger.info("🧠🧠🧠🧠 Top nodes and their H1 section scores:")
+        for n in all_nodes:
+            path = n.node.metadata.get("section_path", [])
+            h1 = path[0] if len(path) > 0 else "❓ Missing H1"
+            score = n.score if hasattr(n, "score") else 0.0
+            logger.info(f"   • H1: {h1} | Score: {score:.3f}")
 
         # Log each document’s best score
         doc_scores = {}
@@ -1709,9 +1906,31 @@ async def handle_standard_query(message: cl.Message):
 
         POLICY_AUTO_THRESH    = 0.5   # only policy FAQ ≥0.55 auto-selects
         DOC_CANDIDATE_THRESH  = 0.5   # any doc ≥0.40 is eligible for the user to choose
-        BU_RELEVANCE_THRESHOLD = 0.50
+        BU_RELEVANCE_THRESHOLD = 0.34
         policy_score = doc_scores.get("Policy FAQ.docx", 0.0)
         top_score = max(doc_scores.values(), default=0.0)
+        
+        # ─── Run vector search ─────────────────────────────────────────────
+        
+        # Step 1: Create retriever FIRST
+        retriever_1 = index.as_retriever(similarity_top_k=5)  # or 10 if you want more flexibility
+
+        # Step 2: Retrieve nodes
+        nodes_1 = retriever_1.retrieve(query_with_context)
+
+        # Step 3: (Optional) slice top_k if needed
+        top_k = nodes_1[:5]
+
+
+        if VECTOR_MIN_THRESHOLD <= top_score < VECTOR_MEDIUM_THRESHOLD:
+            user_q = message.content.strip()
+            logger.info(f"🤖 Triggering LLM check for broad question. top_score = {top_score:.3f}")
+            should_skip = await is_broad_but_clear_question_llm(user_q)
+            logger.info(f"🤖 LLM should_skip = {should_skip}")
+            if should_skip:
+                logger.info("✅ LLM determined this is a broad general question — skipping clarification.")
+                return await answer_from_node(top_k, user_q=text)
+            
         if top_score < BU_RELEVANCE_THRESHOLD:
             logger.warning(
                 "❌ Rejected: top_score %.3f is below BU_RELEVANCE_THRESHOLD %.3f → Question may not be relevant to selected BU/doc",
@@ -1725,6 +1944,8 @@ async def handle_standard_query(message: cl.Message):
                 ) % cl.user_session.get("selected_bu", "N/A")
             ).send()
             return  # ⛔ Stop the flow here
+        
+        
 
         if policy_score == top_score and policy_score >= POLICY_AUTO_THRESH:
             # High-confidence hit in Policy FAQ.docx → pick it immediately
@@ -1866,6 +2087,12 @@ async def handle_standard_query(message: cl.Message):
         level = cl.user_session.get("clarification_level", 2)
         hier  = cl.user_session.get("hier_sections", {})   # { title: [nodes] }
         choice = message.content.strip()
+        
+        # ✅ NEW: detect full-sentence follow-up
+        if not choice.isdigit() and len(choice) > 5:
+            logger.info("✳️ User typed follow-up question during clarification: “%s”", choice)
+            clear_clarification_state()
+            return await handle_standard_query(message)
 
         # Build the options
         titles     = list(hier.keys())
@@ -1932,7 +2159,6 @@ async def handle_standard_query(message: cl.Message):
                 best_h2_chunk = max(h2_nodes, key=lambda n: n.score)
                 logger.info(f"✅ H2 “{selected}” has no H3 → immediate answer (score {best_h2_chunk.score:.3f})")
                 clear_clarification_state()
-                #orig_q = cl.user_session.get("original_user_question")
                 combined_text = "\n\n".join(n.node.text for n in raw_h3[h2_key])
                 await send_with_feedback(
                     f"✅ นี่คือสิ่งที่พบจาก “{h2_key}”:\n\n{combined_text}\n\nหากต้องการเริ่มคำถามใหม่ กรุณาพิมพ์ 0",
@@ -1963,10 +2189,9 @@ async def handle_standard_query(message: cl.Message):
                 ]
                 clear_clarification_state()
                 cl.user_session.set("awaiting_clarification", False)
-                #orig_q = cl.user_session.get("original_user_question")
 
                 logger.info("📚 No H3 found under H2: %s → %d chunks sent", selected, len(matching_chunks))
-                return await answer_from_node(matching_chunks, orig_q)
+                return await answer_from_node(matching_chunks, user_q=text)
 
             # Otherwise show H3 choices
             cl.user_session.set("awaiting_clarification", True)
@@ -1990,8 +2215,8 @@ async def handle_standard_query(message: cl.Message):
             logger.info(f"✅ H3 selected: “{selected}” → {len(h3_nodes)} chunks sent via answer_from_nodes")
             clear_clarification_state()
             cl.user_session.set("awaiting_clarification", False)
-            #orig_q = cl.user_session.get("original_user_question")
-            return await answer_from_node(h3_nodes, orig_q)
+            latest_user_q = current_q
+            return await answer_from_node(h3_nodes, user_q=text)
 
 
 
@@ -2049,8 +2274,7 @@ async def handle_standard_query(message: cl.Message):
                 if best_fuzzy >= 0.6:
                     clear_clarification_state()
                     cl.user_session.set("awaiting_clarification", False)
-                    orig_q = cl.user_session.get("original_user_question") or query_with_context
-                    return await answer_from_node(best_node, orig_q)
+                    return await answer_from_node(best_node, user_q=text)
 
         except Exception:
             logger.exception("❌ Retrieval failed")
@@ -2065,6 +2289,7 @@ async def handle_standard_query(message: cl.Message):
         nodes = pre_drill_nodes
 
     top_score = nodes[0].score if nodes else 0.0
+    
     logger.info(
         f"🧪 DEBUG | top_score={top_score:.4f}, "
         f"VECTOR_MIN={VECTOR_MIN_THRESHOLD:.4f}, "
@@ -2159,8 +2384,7 @@ async def handle_standard_query(message: cl.Message):
 
             clear_clarification_state()
             cl.user_session.set("awaiting_clarification", False)
-            #orig_q = cl.user_session.get("original_user_question") or query_with_context
-            return await answer_from_node(matching_section, orig_q)
+            return await answer_from_node(matching_section, user_q=text)
         else:
             logger.info(f"🏷 Gap too small ({gap:.3f} < {DEEP_GAP_THRESHOLD}) → showing H3 menu")
     # ────────────────────────────────────────────────────────
@@ -2247,7 +2471,7 @@ async def handle_standard_query(message: cl.Message):
                     return
 
     # 6c) Auto‐answer if extremely confident
-    VECTOR_AUTO_DIRECT_THRESHOLD = 0.62 
+    VECTOR_AUTO_DIRECT_THRESHOLD = 0.63 
     if depth >= 2 and top_score >= VECTOR_AUTO_DIRECT_THRESHOLD:
         logger.info(
             "✅ Auto-answer triggered at depth %d (score %.3f)",
@@ -2265,7 +2489,7 @@ async def handle_standard_query(message: cl.Message):
         clear_clarification_state()
         cl.user_session.set("awaiting_clarification", False)
         #orig_q = cl.user_session.get("original_user_question") or query_with_context
-        return await answer_from_node(matching_section, orig_q)
+        return await answer_from_node(matching_section, user_q=text)
 
 
     # ─── 8) 0th-drill: hierarchical section drill ─────────────────────────────────
@@ -2324,6 +2548,18 @@ async def handle_standard_query(message: cl.Message):
             cl.user_session.set("h1_options", filtered_h1s)
             cl.user_session.set("pre_drill_query", current_q)
             cl.user_session.set("pre_drill_nodes", all_doc_nodes)
+            
+            # ✅ Set original_user_question ONLY IF not set and this is a real question
+            if (
+                cl.user_session.get("original_user_question") is None
+                and not current_q.isdigit()
+                and not current_q.lower().startswith("clarified:")
+                and len(current_q.strip()) > 3
+            ):
+                cl.user_session.set("original_user_question", current_q)
+                logger.info(f"📌 Set original_user_question = {current_q}")
+            else:
+                logger.info(f"🛑 Skipped overwriting original_user_question with: {current_q}")
 
             return await show_h1_options(message)
 
@@ -2489,7 +2725,7 @@ async def handle_standard_query(message: cl.Message):
                 if len(n.node.metadata.get("section_path", [])) >= 2
                 and n.node.metadata["section_path"][1] == h2_key
             ]
-            return await answer_from_node(h2_nodes, orig_q)
+            return await answer_from_node(h2_nodes, user_q=text)
 
         # Otherwise, show all H3s found under that H2
         cl.user_session.set("awaiting_clarification", True)
