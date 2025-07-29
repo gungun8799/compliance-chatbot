@@ -612,9 +612,6 @@ async def answer_from_node(node_or_nodes, user_q: str):
     for msg in recent_messages:
         role = "👤 ผู้ใช้" if msg.role == "user" else "🤖 ผู้ช่วย"
         chat_history += f"{role}: {msg.content.strip()}\n"
-        
-    # 🧠 Build contextual_query for retrieval logging
-
 
     # ✅ Latest user message (excluding Clarified:)
     latest_user_q = None
@@ -722,29 +719,7 @@ async def answer_from_node(node_or_nodes, user_q: str):
         logger.info("🧠 Memory after LLM response:")
         for msg in memory.get()[-4:]:
             logger.info(f"MessageRole.{msg.role.upper()}: {msg.content}")
-    # Build contextual query from chat memory
-    contextual_query = ""
-    for m in memory.get():
-        if m.role == "user":
-            contextual_query += f"\nUser: {m.content.strip()}"
-        elif m.role == "assistant":
-            contextual_query += f"\nAssistant: {m.content.strip()}"
 
-    # Use stored original user input
-    original_q = cl.user_session.get("original_user_question")
-    if original_q:
-        contextual_query += f"\nUser: {original_q}"
-        logger.info(f"📌 original_user_question = {original_q}")
-    else:
-        logger.warning("⚠️ original_user_question not set in session.")
-
-    # Append latest assistant response if available
-    if answer:
-        contextual_query += f"\nAssistant: {answer}"
-        logger.info(f"📌 Latest assistant answer appended to contextual query.")
-
-    # Final log output
-    logger.info(f"🧠🧠🧠👤👤👤👤👤👤👤👤 Contextual Query Used for Retrieval:\n{contextual_query}")
     # ✅ Send + log
     await send_with_feedback(final, metadata={"difficulty": "Clarified"})
     save_conversation_log(
@@ -1202,17 +1177,6 @@ async def on_message(message: cl.Message):
     """Handles incoming user messages."""
     text = message.content.strip()
     thread_id = cl.context.session.thread_id
-    
-    if message.content.strip().lower() in {"mm", "memory please"}:
-        memory = cl.user_session.get("memory")
-        if memory:
-            logger.info("🧠 Memory after appending new user message:")
-            for idx, m in enumerate(memory.get()):
-                logger.info(f"[{idx}] {m.role.upper()}: {m.content}")
-        else:
-            logger.info("🧠 No memory found in session.")
-        await cl.Message("📜 Memory printed to logs.").send()
-        return  # Prevent further processing
 
     # ✅ Log incoming message
     save_conversation_log(thread_id, message.id, role="user", content=text)
@@ -1461,6 +1425,7 @@ async def handle_clarification_response(message: cl.Message, text: str):
         # Don't log the number, log the clarified section
         if memory and idx < len(titles):
             clarified_section = titles[idx]
+            memory.put(ChatMessage(role="user", content=f"Clarified: {clarified_section}"))
             logger.info(f"✅ Appended clarified section to memory: {clarified_section}")
         # Normal section picked
         selected_title = titles[idx]
@@ -1469,6 +1434,7 @@ async def handle_clarification_response(message: cl.Message, text: str):
 
         # ✅ Save clarified user choice to memory
         memory = cl.user_session.get("memory")
+        memory.put(ChatMessage(role="user", content=f"Clarified: {selected_title}"))
         logger.info(f"🔍 Hierarchical: user picked “{selected_title}” with {len(selected_nodes)} chunks")
         cl.user_session.set("filtered_nodes", selected_nodes)
         # Stay in clarification flow
@@ -1906,8 +1872,6 @@ async def handle_standard_query(message: cl.Message):
         in_clarification = cl.user_session.get("awaiting_clarification")
         in_drill = cl.user_session.get("drill_level")
 
-        logger.info(f"🧠 Checkpoint: in_clarification={in_clarification}, in_drill={in_drill}")
-
         query_to_use = current_q  # default fallback
 
         if not in_clarification and not in_drill:
@@ -1921,7 +1885,6 @@ async def handle_standard_query(message: cl.Message):
                     and len(m.content.strip()) > 3
                 ]
                 last_msgs = filtered_msgs[-6:]
-
                 contextual_query = "\n".join(
                     [f"{m.role.capitalize()}: {m.content}" for m in last_msgs] + [f"User: {current_q}"]
                 )
@@ -1932,14 +1895,11 @@ async def handle_standard_query(message: cl.Message):
                 logger.info(f"MessageRole.USER (current): {current_q}")
 
                 query_to_use = contextual_query
-                cl.user_session.set("last_contextual_query", contextual_query)
-                logger.info(f"🧠🧠🧠👤👤👤 Contextual Query Used for Retrieval:\n{query_to_use}")
-        else:
-            logger.info("⚠️ Using current_q (no context) due to drill or clarification.")
+                logger.info("🫡🫡🫡🫡 Using contextual_query for retrieval")
 
         # ─── Run retrieval ───
-        logger.info(f"🔍🔍🔍🔍🔍🔍🔍 Final query sent to vector retriever:\n{query_to_use}")
         all_nodes = pre_drill_retriever.retrieve(query_to_use)
+
         # Set flag to use contextual_query next time
         cl.user_session.set("used_contextual_query", True)
 
@@ -2075,50 +2035,8 @@ async def handle_standard_query(message: cl.Message):
                     if n.node.metadata.get("source") == single
                 ]
                 cl.user_session.set("filtered_nodes", filtered)
-            
-    # ────────────────────────────────────────────────────────────────────
-    # ─── Re-run vector retrieval on 2nd+ user questions if pre_drill_nodes missing ───
-    
-    if cl.user_session.get(PRE_DRILL_KEY) and not cl.user_session.get("pre_drill_nodes"):
-        logger.info("♻️ Rehydrating pre_drill_nodes on follow-up turn...")
+        # ────────────────────────────────────────────────────────────────────
 
-        # Reconstruct retriever from session (or reinstantiate it)
-        from llama_index.core import VectorStoreIndex
-        from llama_index.embeddings.cohere import CohereEmbedding
-        import os
-
-        dataset = DATASET_MAPPING.get(cl.user_session.get("chat_profile"))
-        vector_store = qdrant_manager.get_vector_store(dataset, hybrid=True)
-        index = VectorStoreIndex.from_vector_store(vector_store)
-        retriever = index.as_retriever(
-            similarity_top_k=500,
-            embedding_model=CohereEmbedding(
-                api_key=os.getenv("COHERE_API_KEY"),
-                model_name=os.getenv("COHERE_MODEL_ID"),
-                input_type="search_document",
-                embedding_type="float",
-            ),
-        )
-
-        # Use last contextual query if available
-        query_to_use = cl.user_session.get("last_contextual_query") or message.content.strip()
-        logger.info(f"♻️ Re-running retrieval with query:\n{query_to_use}")
-        all_nodes = retriever.retrieve(query_to_use)
-
-        # Enforce BU filtering again
-        selected_bu = cl.user_session.get("selected_bu") or "ALL"
-        if selected_bu != "ALL":
-            allowed_docs = BU_DOCUMENT_MAP.get(selected_bu, [])
-            all_nodes = [
-                n for n in all_nodes
-                if n.node.metadata.get("source", "").split("/")[-1] in allowed_docs
-            ]
-            logger.info("📁 Filtered doc list for BU=%s → %s", selected_bu, allowed_docs)
-
-        # Save retrieved nodes
-        cl.user_session.set("pre_drill_nodes", all_nodes)
-
-        logger.info("♻️ Refreshed pre_drill_nodes set with %d chunks", len(all_nodes))
 
  
 
@@ -2778,6 +2696,7 @@ async def handle_standard_query(message: cl.Message):
             # Store user message in memory
             memory = cl.user_session.get("memory")
             if memory:
+                memory.put(ChatMessage(role="user", content=f"Clarified: {selected_h1}"))
                 logger.info(f"✅ Appended fallback clarified H1: {selected_h1}")
 
             await answer_from_node(fallback_chunks, message.content)
