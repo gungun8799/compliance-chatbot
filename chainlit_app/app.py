@@ -574,8 +574,10 @@ def clear_clarification_state():
         "filtered_nodes",
         "hier_sections",
         "pre_drill_nodes",
+
         "h1_options",
         "drill_level",
+
     ]:
         cl.user_session.set(key, None)
 
@@ -1276,6 +1278,11 @@ async def on_message(message: cl.Message):
             PRE_DRILL_KEY,
             AWAITING_PRE_DRILL,
             "pre_drill_nodes",
+            "top_k",
+            "last_answered_context",
+            "last_answered_nodes",
+            "nodes",
+            "best_node",
             "pre_drill_query",
             DOC_CHOICES_KEY,
             "filtered_nodes",
@@ -1292,6 +1299,9 @@ async def on_message(message: cl.Message):
             "selected_title",
             "ordered_h2",         # ✅ clear selected section title
             "selected_nodes",         # ✅ clear previously filtered nodes
+            "selection_path",   # 🧹 Added this to reset tracked paths
+            "node_or_nodes",    # 🧹 Add this if you're storing it in session elsewhere
+            "full_text",        # 🧹 Add this
         ]:
             if key in (
                 "awaiting_clarification",
