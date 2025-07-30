@@ -648,12 +648,16 @@ async def answer_from_node(node_or_nodes, user_q: str):
     logger.info(f"📌 original_user_question = {cl.user_session.get('original_user_question')}")
     # ✅ Update original_user_question ONLY if valid
     # ✅ Update original_user_question ONLY if it hasn't been set already in this clarification flow
-    if cl.user_session.get("clarifying") is False and is_valid_user_question(latest_user_q):
-        cl.user_session.set("original_user_question", latest_user_q)
-        logger.info(f"✅ Set original_user_question = {latest_user_q}")
-    else:
-        logger.info(f"🚫 Skipped setting original_user_question — either already set or invalid input: {latest_user_q}")
+    is_clarifying = cl.user_session.get("clarifying", False)
+    orig_q = cl.user_session.get("original_user_question")
+    should_override = not is_clarifying and is_valid_user_question(latest_user_q)
 
+    # If this is clearly a fresh question (valid + not clarifying), override original_user_question
+    if should_override and latest_user_q != orig_q:
+        cl.user_session.set("original_user_question", latest_user_q)
+        logger.info(f"✅ Overrode original_user_question with new fresh question: {latest_user_q}")
+    else:
+        logger.info(f"🚫 Skipped overriding original_user_question: is_clarifying={is_clarifying}, latest_user_q={latest_user_q}, existing={orig_q}")
     # ✅ Prepare for LLM call
     runnable = cl.user_session.get("runnable")
     if runnable is None:
@@ -683,7 +687,10 @@ async def answer_from_node(node_or_nodes, user_q: str):
     # ─── Get final user message from memory ──────────────────────
     memory = cl.user_session.get("memory")
     prior_messages = memory.get()
-    main_question = next((m.content for m in reversed(prior_messages) if m.role == "user"), user_q)
+    main_question = cl.user_session.get("original_user_question") or next(
+        (m.content for m in reversed(prior_messages) if m.role == "user" and not m.content.strip().isdigit()), 
+        user_q
+    )
     # ✅ Prompt to LLM
     prompt = (
         f"📜 ประวัติการสนทนา:\n{chat_history}\n\n"
@@ -1362,7 +1369,7 @@ async def on_message(message: cl.Message):
             return await handle_standard_query(message)
 
         # 🧠 Otherwise, continue clarification
-        if is_valid:
+        if is_valid and not text.strip().isdigit():
             cl.user_session.set("original_user_question", text)
             logger.info(f"📌 Set original_user_question during clarification = {text}")
         else:
@@ -1379,9 +1386,7 @@ async def on_message(message: cl.Message):
         if is_valid:
             if cl.user_session.get("original_user_question") is not None:
                 should_skip = await is_broad_but_clear_question_llm(text)
-                if should_skip:
-                    logger.info("🧠 Broad question detected, but original_user_question already set → treat as follow-up, do NOT reset flow.")
-                    # Let it proceed normally without resetting anything
+ 
             else:
                 should_skip = await is_broad_but_clear_question_llm(text)
                 if should_skip:
@@ -1734,62 +1739,125 @@ async def handle_standard_query(message: cl.Message):
     orig_q = cl.user_session.get("original_user_question")
 
     # ✅ Handle follow-up question after clarification
-    if clarification_just_exited and last_ctx:
+    # ✅ [New logic] Use LLM to decide if it's a follow-up or new topic
+    memory = cl.user_session.get("memory")
+    orig_q = cl.user_session.get("original_user_question")
+    last_ctx = cl.user_session.get("last_answered_context")
+    clarification_just_exited = cl.user_session.get("clarification_just_exited")
+    text = message.content.strip()
+
+    # Compose contextual conversation
+    recent = memory.get()[-6:] if memory else []
+    context = "\n".join(
+        f"{m.role.title()}: {m.content.strip()}"
+        for m in recent if m.content.strip()
+    )
+    contextual_query = f"{context}\nUser: {text}" if context else text
+
+    # 🧠 Ask LLM if this is a follow-up
+    llm = get_llm_settings(cl.user_session.get("chat_profile"))
+    followup_check_prompt = (
+        "Given the following chat history and the new user message, "
+        "determine if the user is continuing a follow-up from the same topic. "
+        "If yes, answer only 'Yes'. If it starts a new topic, answer only 'No'.\n\n"
+        f"{context}\nUser: {text}"
+    )
+    try:
+        followup_result = llm.chat([ChatMessage(role="user", content=followup_check_prompt)])
+        followup_answer = followup_result.message.content.strip().lower()
+        logger.info(f"🧠 [Follow-up LLM] → {followup_answer}")
+    except Exception as e:
+        logger.warning(f"LLM follow-up check failed: {e}")
+        followup_answer = "no"
+
+    # ✅ Follow-up case → reuse context
+    if followup_answer == "yes" and last_ctx:
+        logger.info("🧠 Follow-up detected → reuse last_answered_context")
+        if memory:
+            memory.put(ChatMessage(role="user", content=text))
         cl.user_session.set("clarification_just_exited", False)
+        return await answer_from_node(last_ctx, user_q=text)
+        
+    current_q = message.content.strip()
+    user_q = current_q
+    should_skip = await is_broad_but_clear_question_llm(user_q)
 
-        similarity = 0.0
-        if orig_q:
-            from difflib import SequenceMatcher
-            similarity = SequenceMatcher(None, text, orig_q).ratio()
-            logger.info(f"🧠 Follow-up similarity with original: {similarity:.2f}")
+    if should_skip:
+        logger.info("✅ Broad general question — will answer directly using LLM with top_k context")
 
-        # ✅ If still similar → reuse last context
-        if similarity > 0.7:
-            logger.info("🧠 Follow-up question is similar → reusing last_answered_context")
-            memory = cl.user_session.get("memory")
-            if memory:
-                memory.put(ChatMessage(role="user", content=orig_q))
-                memory.put(ChatMessage(role="user", content=text))
-            return await answer_from_node(last_ctx, user_q=text)
+        # ⛔ Skip clarification and drill flow
+        cl.user_session.set("awaiting_clarification", False)
+        cl.user_session.set("clarification_level", None)
+        cl.user_session.set("drill_level", None)
+        cl.user_session.set("clarification_just_exited", True)
+        cl.user_session.set("original_user_question", user_q)
+        cl.user_session.set("auto_skipped", True)
 
-        # ❌ If not similar → run fresh BU-filtered vector search using in-function retriever
-        else:
-            logger.info("🧠 Follow-up is a topic change → fallback to new BU-filtered retrieval")
-            memory = cl.user_session.get("memory")
-            if memory:
-                memory.put(ChatMessage(role="user", content=orig_q))
-                memory.put(ChatMessage(role="user", content=text))
+        # ─── Run vector search ─────────────────────────────────────────────
+        # 🧠 Load index based on current chat profile
+        from llama_index.core import VectorStoreIndex
+        dataset = DATASET_MAPPING.get(cl.user_session.get("chat_profile"))
+        vector_store = qdrant_manager.get_vector_store(dataset, hybrid=True)
+        index = VectorStoreIndex.from_vector_store(vector_store)
+        retriever = index.as_retriever(similarity_top_k=5)
+        nodes = retriever.retrieve(user_q)
+        top_k = nodes[:5] if nodes else []
 
-            # Build contextual query from recent memory
-            recent = memory.get()[-6:] if memory else []
-            context = "\n".join(
-                f"{m.role.title()}: {m.content.strip()}"
-                for m in recent if m.content.strip()
-            )
-            contextual_query = f"{context}\nUser: {text}" if context else text
-            logger.info(f"🧠 Final contextual_query = \n\n{contextual_query}")
+        top_score = top_k[0].score if top_k and hasattr(top_k[0], "score") else 0.0
+        logger.info(f"🔍 Top vector score = {top_score:.3f}")
 
-            # Use retriever from session
-            retriever = cl.user_session.get("retriever")
-            retrieved_nodes = retriever.retrieve(contextual_query)
+        if VECTOR_MIN_THRESHOLD <= top_score < 0.67 and should_skip:
+            logger.info("✅ Broad general question — will answer directly using LLM with top_k context")
 
-            # Filter by selected BU
-            selected_bu = cl.user_session.get("selected_bu")
-            allowed_docs = BU_DOCUMENT_MAP.get(selected_bu, [])
-            retrieved_nodes = [n for n in retrieved_nodes if n.node.metadata.get("source") in allowed_docs]
-            logger.info(f"📁 Filtered to {len(retrieved_nodes)} nodes for BU '{selected_bu}'")
-
-            # ⛔ Reset all previous drill / clarification state
-            cl.user_session.set("last_answered_context", retrieved_nodes)
-            cl.user_session.set("section_path_memory", [])
-            cl.user_session.set("pre_drill_nodes", None)
-            cl.user_session.set("pre_drill_query", None)
-            cl.user_session.set("drill_level", None)
             cl.user_session.set("awaiting_clarification", False)
-            cl.user_session.set("hier_sections", {})
-            cl.user_session.set("original_user_question", text)
+            cl.user_session.set("clarification_level", None)
+            cl.user_session.set("drill_level", None)
+            cl.user_session.set("clarification_just_exited", True)
+            cl.user_session.set("auto_skipped", True)
 
-            return await answer_from_node(retrieved_nodes, user_q=text)
+            if not user_q.strip().isdigit():
+                cl.user_session.set("original_user_question", user_q)
+                logger.info(f"📌 Set original_user_question on broad-skip: {user_q}")
+            else:
+                logger.info(f"🚫 Skipped setting original_user_question on broad-skip: {user_q}")
+
+            memory = cl.user_session.get("memory")
+            if memory:
+                memory.put(ChatMessage(role="user", content=user_q))
+
+            if top_k:
+                return await answer_from_node(top_k, user_q=user_q)
+            else:
+                logger.warning("⚠️ No top_k results available to answer from.")
+                return await cl.Message(content="ขออภัย ไม่พบข้อมูลที่เกี่ยวข้องในระบบ").send()
+
+    # ❌ New topic → reset and run full clarification
+    logger.info("🧠 New topic detected → clearing memory and running full drill flow")
+    cl.user_session.set("clarification_just_exited", False)
+    cl.user_session.set("last_answered_context", None)
+    cl.user_session.set("section_path_memory", [])
+    cl.user_session.set("pre_drill_nodes", None)
+    cl.user_session.set("pre_drill_query", None)
+    cl.user_session.set("drill_level", None)
+    cl.user_session.set("awaiting_clarification", False)
+    cl.user_session.set("hier_sections", {})
+    cl.user_session.set("original_user_question", text)
+
+    if memory:
+        user = cl.user_session.get("user")
+        thread_id = cl.context.session.thread_id
+        redis_session_id = f"{user.identifier}:{thread_id}"
+
+        new_memory = ChatMemoryBuffer.from_defaults(
+            token_limit=TOKEN_LIMIT,
+            chat_store=chat_store,
+            chat_store_key=redis_session_id
+        )
+
+        cl.user_session.set("memory", new_memory)
+
+    # 🔁 Continue with drill flow logic (this is the remaining part of your full handle_standard_query)
+    # You should let the function proceed beyond this block (don’t return here)
     current_q = text
     # ─── Early: Ensure original_user_question is set only on real question ───
     already_set = cl.user_session.get("original_user_question") is not None
@@ -2068,43 +2136,7 @@ async def handle_standard_query(message: cl.Message):
         policy_score = doc_scores.get("Policy FAQ.docx", 0.0)
         top_score = max(doc_scores.values(), default=0.0)
         
-        # ─── Run vector search ─────────────────────────────────────────────
-        
-        # Step 1: Create retriever FIRST
-        retriever_1 = index.as_retriever(similarity_top_k=5)  # or 10 if you want more flexibility
 
-        # Step 2: Retrieve nodes
-        nodes_1 = retriever_1.retrieve(query_with_context)
-
-        # Step 3: (Optional) slice top_k if needed
-        # Step 3: (Optional) slice top_k if needed
-        top_k = nodes_1[:5]
-
-        # ✅ Insert this line to get real node-level top_score
-        top_score = top_k[0].score if top_k and hasattr(top_k[0], "score") else 0.0
-
-        if VECTOR_MIN_THRESHOLD <= top_score < 0.67:
-            user_q = message.content.strip()
-            logger.info(f"🤖 Triggering LLM check for broad question. top_score = {top_score:.3f}")
-            should_skip = await is_broad_but_clear_question_llm(user_q)
-            logger.info(f"🧠 [Broad Q Check] LLM should_skip = {should_skip} for question: '{user_q}'")
-
-            if should_skip:
-                logger.info("✅ Broad general question — will answer directly using LLM with top_k context")
-
-                # ⛔ Skip clarification flow
-                cl.user_session.set("awaiting_clarification", False)
-                cl.user_session.set("clarification_level", None)
-                cl.user_session.set("drill_level", None)
-                cl.user_session.set("clarification_just_exited", True)
-                cl.user_session.set("original_user_question", user_q)
-                cl.user_session.set("auto_skipped", True)
-
-                memory = cl.user_session.get("memory")
-                if memory:
-                    memory.put(ChatMessage(role="user", content=user_q))
-
-                return await answer_from_node(top_k, user_q=user_q)
             
         if top_score < BU_RELEVANCE_THRESHOLD:
             logger.warning(
