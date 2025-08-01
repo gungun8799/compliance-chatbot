@@ -302,7 +302,7 @@ async def ask_business_unit():
     cl.user_session.set("business_units", business_units)
     await cl.Message(content="กรุณาเลือกหัวข้อคำถามโดยพิมพ์ตัวเลขเพื่อเลือกหัวข้อ:\n\n" + options).send()
         
-# ✅ Add this for on-demand manual retrieval testing
+# ✅ Add this for on-demand manual retrieval testin
 def manual_retrieve(query: str, top_k=5):
     from llama_index.core import Settings, VectorStoreIndex
     from llama_index.embeddings.cohere import CohereEmbedding
