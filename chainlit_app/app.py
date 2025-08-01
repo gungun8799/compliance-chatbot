@@ -300,7 +300,7 @@ async def ask_business_unit():
     options = "\n".join(f"{i+1}. {bu}" for i, bu in enumerate(business_units))
     cl.user_session.set("awaiting_bu_selection", True)
     cl.user_session.set("business_units", business_units)
-    await cl.Message(content="กรุณาเลือก Business Group ที่เกี่ยวข้องกับคำถามของคุณ:\n\n" + options).send()
+    await cl.Message(content="กรุณาเลือกหัวข้อคำถามโดยพิมพ์ตัวเลขเพื่อเลือกหัวข้อ:\n\n" + options).send()
         
 # ✅ Add this for on-demand manual retrieval testing
 def manual_retrieve(query: str, top_k=5):
