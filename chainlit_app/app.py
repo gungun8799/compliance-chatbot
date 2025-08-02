@@ -731,7 +731,8 @@ async def answer_from_node(node_or_nodes, user_q: str):
     if memory:
         memory.put(ChatMessage(role="assistant", content=final))
         logger.info("🧠 Memory after LLM response:")
-        for msg in memory.get()[-4:]:
+        recent_messages = memory.get()[-4:] if memory.get() else []
+        for msg in recent_messages:
             logger.info(f"MessageRole.{msg.role.upper()}: {msg.content}")
 
     # Store the nodes used in the response before returning
@@ -1473,6 +1474,11 @@ async def show_h2_options(message):
 async def show_h3_options(message):
     raw_h3 = cl.user_session.get("hier_sections", {})
     h3_options = list(raw_h3.keys())
+    
+    # Limit to top 4 H3 choices to avoid overwhelming the user
+    if len(h3_options) > 4:
+        logger.info(f"🔢 Limiting H3 choices from {len(h3_options)} to 4")
+        h3_options = h3_options[:4]
 
     exit_label = "❌ ถามคำถามใหม่"
     opts = h3_options + [exit_label]
@@ -1639,6 +1645,66 @@ async def handle_clarification_response(message: cl.Message, text: str):
                     cl.user_session.set("last_answered_context", selected_h3_nodes)
                     return await answer_from_node(selected_h3_nodes, user_q=message.content.strip())
                 else:
+                    # Check for keyword-based auto-selection for specific questions
+                    original_question = cl.user_session.get("original_user_question", "").lower()
+                    
+                    # 1. Check for procurement supplier questions
+                    if "procurement" in original_question and ("เปิด" in original_question or "ใหม่" in original_question or "ทำอย่างไร" in original_question):
+                        # Look for H3 section containing procurement supplier content
+                        procurement_h3 = None
+                        for h3_title in raw_h3.keys():
+                            # Check if H3 contains procurement supplier info by examining node content
+                            h3_nodes = raw_h3[h3_title]
+                            for node in h3_nodes[:3]:  # Check first few nodes for efficiency
+                                if "คู่ค้าภายใต้การดูแลของแผนกจัดซื้อ" in node.node.text or "procurement supplier" in node.node.text.lower():
+                                    procurement_h3 = h3_title
+                                    break
+                            if procurement_h3:
+                                break
+                        
+                        if procurement_h3:
+                            logger.info(f"🔄 Auto-selecting procurement-related H3: '{procurement_h3}' for procurement supplier question")
+                            
+                            await cl.Message(
+                                content=f"🔄 กำลังค้นหาข้อมูลเฉพาะสำหรับคู่ค้า Procurement โดยอัตโนมัติ",
+                                author="Customer Service Agent"
+                            ).send()
+                            
+                            # Final answer with auto-selected H3
+                            selected_h3_nodes = raw_h3[procurement_h3]
+                            cl.user_session.set("selected_h3", procurement_h3)
+                            cl.user_session.set("filtered_nodes", selected_h3_nodes)
+                            cl.user_session.set("awaiting_clarification", False)
+                            cl.user_session.set("clarification_just_exited", True)
+                            cl.user_session.set("last_answered_context", selected_h3_nodes)
+                            return await answer_from_node(selected_h3_nodes, user_q=message.content.strip())
+                    
+                    # 2. Check for general document questions
+                    elif "เอกสาร" in original_question and ("เปิด" in original_question or "vendor" in original_question or "ใหม่" in original_question):
+                        # Look for H3 section about required documents
+                        document_h3 = None
+                        for h3_title in raw_h3.keys():
+                            if "เอกสารที่ต้องใช้" in h3_title and "vendor" in h3_title:
+                                document_h3 = h3_title
+                                break
+                        
+                        if document_h3:
+                            logger.info(f"🔄 Auto-selecting document-related H3: '{document_h3}' for question about documents")
+                            
+                            await cl.Message(
+                                content=f"🔄 กำลังเลือกส่วนที่เกี่ยวข้องกับเอกสารโดยอัตโนมัติ: **{document_h3}**",
+                                author="Customer Service Agent"
+                            ).send()
+                            
+                            # Final answer with auto-selected H3
+                            selected_h3_nodes = raw_h3[document_h3]
+                            cl.user_session.set("selected_h3", document_h3)
+                            cl.user_session.set("filtered_nodes", selected_h3_nodes)
+                            cl.user_session.set("awaiting_clarification", False)
+                            cl.user_session.set("clarification_just_exited", True)
+                            cl.user_session.set("last_answered_context", selected_h3_nodes)
+                            return await answer_from_node(selected_h3_nodes, user_q=message.content.strip())
+                    
                     # Multiple H3s - show choices
                     cl.user_session.set("clarification_level", 2)
                     cl.user_session.set("awaiting_clarification", True)
@@ -1696,11 +1762,68 @@ async def handle_clarification_response(message: cl.Message, text: str):
                 cl.user_session.set("selected_h3", single_h3)
                 cl.user_session.set("filtered_nodes", selected_h3_nodes)
                 cl.user_session.set("awaiting_clarification", False)
-                cl.user_session.set("clarification_just_exited", True)
-                cl.user_session.set("last_answered_context", selected_h3_nodes)
-                return await answer_from_node(selected_h3_nodes, user_q=message.content.strip())
             else:
-                # Multiple H3s - show choices
+                # Check for keyword-based auto-selection for specific questions
+                original_question = cl.user_session.get("original_user_question", "").lower()
+                
+                # 1. Check for procurement supplier questions
+                if "procurement" in original_question and ("เปิด" in original_question or "ใหม่" in original_question or "ทำอย่างไร" in original_question):
+                    # Look for H3 section containing procurement supplier content
+                    procurement_h3 = None
+                    for h3_title in raw_h3.keys():
+                        # Check if H3 contains procurement supplier info by examining node content
+                        h3_nodes = raw_h3[h3_title]
+                        for node in h3_nodes[:3]:  # Check first few nodes for efficiency
+                            if "คู่ค้าภายใต้การดูแลของแผนกจัดซื้อ" in node.node.text or "procurement supplier" in node.node.text.lower():
+                                procurement_h3 = h3_title
+                                break
+                        if procurement_h3:
+                            break
+                    
+                    if procurement_h3:
+                        logger.info(f"🔄 Auto-selecting procurement-related H3: '{procurement_h3}' for procurement supplier question")
+                        
+                        await cl.Message(
+                            content=f"🔄 กำลังค้นหาข้อมูลเฉพาะสำหรับคู่ค้า Procurement โดยอัตโนมัติ",
+                            author="Customer Service Agent"
+                        ).send()
+                        
+                        # Final answer with auto-selected H3
+                        selected_h3_nodes = raw_h3[procurement_h3]
+                        cl.user_session.set("selected_h3", procurement_h3)
+                        cl.user_session.set("filtered_nodes", selected_h3_nodes)
+                        cl.user_session.set("awaiting_clarification", False)
+                        cl.user_session.set("clarification_just_exited", True)
+                        cl.user_session.set("last_answered_context", selected_h3_nodes)
+                        return await answer_from_node(selected_h3_nodes, user_q=message.content.strip())
+                
+                # 2. Check for general document questions
+                elif "เอกสาร" in original_question and ("เปิด" in original_question or "vendor" in original_question or "ใหม่" in original_question):
+                    # Look for H3 section about required documents
+                    document_h3 = None
+                    for h3_title in raw_h3.keys():
+                        if "เอกสารที่ต้องใช้" in h3_title and "vendor" in h3_title:
+                            document_h3 = h3_title
+                            break
+                    
+                    if document_h3:
+                        logger.info(f"🔄 Auto-selecting document-related H3: '{document_h3}' for question about documents")
+                        
+                        await cl.Message(
+                            content=f"🔄 กำลังเลือกส่วนที่เกี่ยวข้องกับเอกสารโดยอัตโนมัติ: **{document_h3}**",
+                            author="Customer Service Agent"
+                        ).send()
+                        
+                        # Final answer with auto-selected H3
+                        selected_h3_nodes = raw_h3[document_h3]
+                        cl.user_session.set("selected_h3", document_h3)
+                        cl.user_session.set("filtered_nodes", selected_h3_nodes)
+                        cl.user_session.set("awaiting_clarification", False)
+                        cl.user_session.set("clarification_just_exited", True)
+                        cl.user_session.set("last_answered_context", selected_h3_nodes)
+                        return await answer_from_node(selected_h3_nodes, user_q=message.content.strip())
+                
+                # No auto-selection possible, show H3 choices
                 cl.user_session.set("clarification_level", 2)
                 cl.user_session.set("awaiting_clarification", True)
                 cl.user_session.set("hier_sections", raw_h3)
@@ -1895,7 +2018,7 @@ async def is_broad_but_clear_question_llm(question: str) -> bool:
     prompt = (
         f'User asked: "{question}"\n\n'
         "Determine if this is a **broad, general policy-level** question that can be answered directly without needing further clarification.\n\n"
-        "✅ Answer 'Yes' if the question is asking for a **definition, general explanation, high-level process overview, or policy summary** (e.g., 'DOA คืออะไร', 'LOA ต่างจาก DOA อย่างไร', 'Process ในการสั่งซื้อ ต้องทำอย่างไรบ้าง', 'ขั้นตอนการทำสัญญาคืออะไร', ใครคือ Chief Finance Officer).\n"
+        "✅ Answer 'Yes' if the question is asking for a **definition, general explanation, high-level process overview, or policy summary** (e.g., 'DOA คืออะไร', 'LOA ต่างจาก DOA อย่างไร', 'Process ในการสั่งซื้อ ต้องทำอย่างไรบ้าง', 'ขั้นตอนการทำสัญญาคืออะไร', รายชื่อผู้บริหาร, ผู้ที่ต้องติดต่อ).\n"
         "❌ Answer 'No' if the question includes **specific numbers, exact amounts, particular conditions, detailed scenarios, specific approvals, payment methods, or user-specific logic**.\n\n"
         "Respond with only 'Yes' or 'No'."
     )
@@ -2055,6 +2178,17 @@ async def handle_followup_or_clarification(message: cl.Message) -> Optional[cl.M
         and followup_answer == "yes"
     ):
         logger.warning("🛑 Follow-up fallback — no clarification or drill but follow-up was detected.")
+        
+        # Check if the follow-up contains specific different parameters that need new search
+        import re
+        amounts = re.findall(r'(\d+)\s*(?:ล้าน|ล้านบาท|million)', text.lower())
+        if amounts:
+            # Follow-up has specific amounts - needs new search for that amount
+            logger.info(f"🔍 Follow-up contains specific amount: {amounts} - performing new search instead of reusing context")
+            # Set follow-up mode to get fresh results but maintain context awareness
+            cl.user_session.set("in_followup_mode", True)
+            return None  # Let normal flow handle with new search
+        
         if last_ctx:
             return await answer_from_node(last_ctx, user_q=text)
         else:
@@ -2253,6 +2387,24 @@ async def handle_broad_general_question(user_q: str):
             # Find highest scoring H1
             best_h1 = max(h1_similarity_scores.items(), key=lambda x: x[1])
             best_h1_name, best_h1_score = best_h1
+            
+            # Check BU context before auto-selecting H1
+            selected_bu = cl.user_session.get("selected_bu", "")
+            is_supplier_bu = "supplier" in selected_bu.lower() or "procurement" in selected_bu.lower() or "คู่ค้า" in selected_bu.lower()
+            
+            # Override auto-selection if BU context conflicts with best H1
+            if is_supplier_bu and "supplier" not in best_h1_name.lower() and "คู่ค้า" not in best_h1_name:
+                # Look for Supplier/Vendor H1 in meaningful groups
+                supplier_h1 = None
+                for h1_name in meaningful_h1_groups:
+                    if "supplier" in h1_name.lower() or "คู่ค้า" in h1_name:
+                        supplier_h1 = h1_name
+                        break
+                
+                if supplier_h1:
+                    logger.info(f"🎯 BU context override: Selecting '{supplier_h1}' instead of '{best_h1_name}' for supplier BU")
+                    best_h1_name = supplier_h1
+                    best_h1_score = h1_similarity_scores.get(supplier_h1, 0.0)
             
             if best_h1_score >= H1_AUTO_SELECT_THRESHOLD:
                 logger.info(f"🎯 H1 auto-selected (high similarity): '{best_h1_name}' (score={best_h1_score:.3f} >= {H1_AUTO_SELECT_THRESHOLD})")
@@ -3029,6 +3181,23 @@ async def handle_standard_query(message: cl.Message):
     if cl.user_session.get("in_followup_mode"):
         logger.info("🔁 Follow-up mode active — setting new pre_drill_nodes from retrieved vector nodes.")
         cl.user_session.set("pre_drill_nodes", nodes)
+        
+        # Try to maintain context from previous H3 selection if available
+        prev_h3 = cl.user_session.get("selected_h3")
+        if prev_h3:
+            logger.info(f"🎯 Previous H3 context: '{prev_h3}' - trying to auto-navigate to same section")
+            # Filter nodes to same H3 section type if found in results
+            filtered_for_h3 = [
+                n for n in nodes 
+                if (path := n.node.metadata.get("section_path", [])) and len(path) >= 3 
+                and any(keyword in path[2].lower() for keyword in ['อนุมัติ', 'capex', 'งบประมาณ', 'โครงการ'] if 'อนุมัติ' in prev_h3.lower())
+            ]
+            if filtered_for_h3:
+                logger.info(f"🎯 Found {len(filtered_for_h3)} nodes in similar H3 context - using filtered set")
+                cl.user_session.set("pre_drill_nodes", filtered_for_h3)
+        
+        # Clear follow-up mode flag after processing
+        cl.user_session.set("in_followup_mode", False)
     else:
         pre_drill_nodes = cl.user_session.get("pre_drill_nodes")
         if pre_drill_nodes:
@@ -3073,8 +3242,8 @@ async def handle_standard_query(message: cl.Message):
     depth = len(best_path)
 
     # ─── NEW: deepest‐level + confidence + gap shortcut ───
-    DEEP_DIRECT_THRESHOLD = 0.30
-    DEEP_GAP_THRESHOLD    = 0.055
+    DEEP_DIRECT_THRESHOLD = 0.25  # Lower threshold for auto-selection
+    DEEP_GAP_THRESHOLD    = 0.025  # Lower threshold to enable more auto-selection
 
     # look at your full pre‐drill to see how deep your document actually goes
     all_pre_drill = cl.user_session.get("pre_drill_nodes") or []
@@ -3134,13 +3303,31 @@ async def handle_standard_query(message: cl.Message):
         if gap >= DEEP_GAP_THRESHOLD:
             logger.info(f"🏷 Deepest‐level direct‐answer (gap {gap:.3f} ≥ {DEEP_GAP_THRESHOLD})")
 
-            # Use all nodes from the same section_path as the best_node
-            section_path = best_node.node.metadata.get("section_path", [])
+            # Check if this is a D&B question that spans both Trade and Non-trade sections
+            query_lower = text.lower()
+            is_db_question = any(keyword in query_lower for keyword in ["d&b", "dun", "bradstreet", "ประเมินความเสี่ยง"])
+            
             all_nodes = cl.user_session.get("h1_filtered_nodes") or cl.user_session.get("pre_drill_nodes") or []
-            matching_section = [
-                n for n in all_nodes
-                if n.node.metadata.get("section_path", []) == section_path
-            ]
+            
+            if is_db_question:
+                # For D&B questions, include both Trade and Non-trade D&B sections
+                matching_section = [
+                    n for n in all_nodes
+                    if len(n.node.metadata.get("section_path", [])) >= 3 and (
+                        "d&b" in n.node.metadata["section_path"][2].lower() or
+                        "dun" in n.node.metadata["section_path"][2].lower() or
+                        "bradstreet" in n.node.metadata["section_path"][2].lower() or
+                        "ประเมินความเสี่ยง" in n.node.metadata["section_path"][2].lower()
+                    )
+                ]
+                logger.info(f"🏷 D&B question detected: including {len(matching_section)} D&B-related nodes from both Trade and Non-trade sections")
+            else:
+                # Use all nodes from the same section_path as the best_node
+                section_path = best_node.node.metadata.get("section_path", [])
+                matching_section = [
+                    n for n in all_nodes
+                    if n.node.metadata.get("section_path", []) == section_path
+                ]
 
             clear_clarification_state()
             cl.user_session.set("awaiting_clarification", False)
@@ -3168,7 +3355,7 @@ async def handle_standard_query(message: cl.Message):
         return
 
     # ─── 6b) Auto‐drill into H3 of the highest‐scoring H2 (skip H2 menu) ───────────
-    VECTOR_AUTO_LEVEL3_THRESHOLD = 0.6
+    VECTOR_AUTO_LEVEL3_THRESHOLD = 0.55  # Lower threshold to enable auto-drill for specific questions
     if not cl.user_session.get("awaiting_clarification") and top_score >= VECTOR_AUTO_LEVEL3_THRESHOLD:
         from collections import defaultdict
         top_k_nodes = nodes[:5]
@@ -3224,7 +3411,7 @@ async def handle_standard_query(message: cl.Message):
                     return await show_h3_options(message)
 
     # 6c) Auto‐answer if extremely confident
-    VECTOR_AUTO_DIRECT_THRESHOLD = 0.63 
+    VECTOR_AUTO_DIRECT_THRESHOLD = 0.58  # Lower threshold to enable direct answers for specific questions 
     if depth >= 2 and top_score >= VECTOR_AUTO_DIRECT_THRESHOLD:
         logger.info(
             "✅ Auto-answer triggered at depth %d (score %.3f)",
@@ -3262,13 +3449,39 @@ async def handle_standard_query(message: cl.Message):
         best_h1 = best_path[0] if len(best_path) >= 1 else None
         if best_h1:
             cl.user_session.set("selected_h1", best_h1)
-    # 🔧 FIX: build section_scores (H1 → max score of its chunks)
+    # 🔧 Simple logic: If high-scoring content exists under different parent levels, show choices
+    HIGH_SCORE_THRESHOLD = 0.4
+    
+    # Group high-scoring nodes by H1 parent
+    h1_high_score_groups = defaultdict(list)
     section_scores = defaultdict(float)
+    
     for n in all_doc_nodes:
         path = n.node.metadata.get("section_path", [])
+        score = getattr(n, "score", 0.0)
+        
         if len(path) >= 1:
             h1 = path[0]
-            section_scores[h1] = max(section_scores[h1], getattr(n, "score", 0.0))
+            section_scores[h1] = max(section_scores[h1], score)
+            
+            # Track high-scoring content
+            if score >= HIGH_SCORE_THRESHOLD:
+                h1_high_score_groups[h1].append((n, score))
+    
+    # Check if multiple H1 sections have high-scoring content
+    h1_with_high_scores = [h1 for h1, group in h1_high_score_groups.items() if group]
+    multiple_good_h1s = len(h1_with_high_scores) > 1
+    
+    # Limit to top 4 highest-scoring H1 sections to avoid overwhelming user
+    if multiple_good_h1s and len(h1_with_high_scores) > 4:
+        # Sort by max score and take top 4
+        h1_scores = [(h1, section_scores[h1]) for h1 in h1_with_high_scores]
+        h1_scores.sort(key=lambda x: x[1], reverse=True)
+        h1_with_high_scores = [h1 for h1, _ in h1_scores[:4]]
+        logger.info(f"🔍 Limited to top 4 H1 sections: {h1_with_high_scores}")
+    
+    logger.info(f"🔍 H1 sections with high scores (>={HIGH_SCORE_THRESHOLD}): {h1_with_high_scores}")
+    logger.info(f"🔍 Multiple good H1 sections: {multiple_good_h1s}")
     all_h1s = []
     for n in all_doc_nodes:
         path = n.node.metadata.get("section_path", [])
@@ -3341,11 +3554,33 @@ async def handle_standard_query(message: cl.Message):
         score_gap = top_score - second_score
         logger.info("🔍 H1 score gap = %.3f", score_gap)
 
-        # Auto-select H1 if high confidence and clear winner
-        if top_score >= H1_AUTO_SELECT_THRESHOLD and score_gap >= H1_AUTO_SELECT_GAP:
+        # Force H1 choices if multiple sections have high-scoring content
+        if multiple_good_h1s:
+            logger.info(f"🎯 Multiple H1 sections with high scores - forcing user choice")
+            cl.user_session.set("drill_level", "h1")
+            
+            # Show only H1s that have high-scoring content
+            filtered_h1s = h1_with_high_scores
+            cl.user_session.set("h1_options", filtered_h1s)
+            cl.user_session.set("pre_drill_query", current_q)
+            cl.user_session.set("pre_drill_nodes", all_doc_nodes)
+            
+            if (
+                cl.user_session.get("original_user_question") is None
+                and len(current_q.strip()) > 3
+                and not current_q.strip().isdigit()
+                and not re.fullmatch(r"^[0-9]+$", current_q.strip())
+                and not current_q.lower().startswith("clarified:")
+            ):
+                cl.user_session.set("original_user_question", current_q)
+                logger.info(f"📌 Set original_user_question = {current_q}")
+            
+            return await show_h1_options(message)
+        # Auto-select H1 if high confidence and clear winner AND no multiple good sections
+        elif top_score >= H1_AUTO_SELECT_THRESHOLD and score_gap >= H1_AUTO_SELECT_GAP:
             logger.info(f"🎯 H1 auto-selected: '{top_h1}' (score={top_score:.3f}, gap={score_gap:.3f})")
             cl.user_session.set("selected_h1", top_h1)
-            # Continue to H2 logic below instead of showing H1 options
+            # Continue to H2 lcanogic below instead of showing H1 options
         elif score_gap < 0.08:  # not a big gap, means ambiguity
             cl.user_session.set("drill_level", "h1")
 
@@ -3488,9 +3723,6 @@ async def handle_standard_query(message: cl.Message):
                 logger.info(f"✅ Appended fallback clarified H1: {selected_h1}")
 
             await answer_from_node(fallback_chunks, message.content)
-        else:
-            logger.warning("⚠️ No fallback chunks available for selected_h1")
-            await send_with_feedback("⚠️ ไม่พบเนื้อหาในหัวข้อนี้")
 
         return
 
