@@ -1374,16 +1374,30 @@ async def on_message(message: cl.Message):
 
         is_valid = len(text) > 3 and not text.isdigit()
         if is_valid:
-            is_broad = await is_broad_but_clear_question_llm(text)
-            if is_broad:
-                logger.info("🧠 Broad question detected during clarification — skipping clarification.")
-                reset_clarification_state(text)
-                cl.user_session.set("original_user_question", text)
-                memory.put(ChatMessage(role="user", content=text))
-                return await handle_broad_general_question(text)
+            # Check if we just exited H3 clarification - prioritize follow-up detection
+            clarification_just_exited = cl.user_session.get("clarification_just_exited")
+            last_ctx = cl.user_session.get("last_answered_context")
+            
+            if clarification_just_exited and last_ctx:
+                logger.info("🔍 Post-H3 state detected - bypassing broad question logic to allow follow-up detection")
+                # Don't call reset_clarification_state yet - let follow-up detection handle it
+                # Fall through to normal message handling which will call handle_followup_or_clarification
+                cl.user_session.set("awaiting_clarification", False)  # Exit clarification mode
+                # Continue to main message processing below
+            else:
+                is_broad = await is_broad_but_clear_question_llm(text)
+                if is_broad:
+                    logger.info("🧠 Broad question detected during clarification — skipping clarification.")
+                    reset_clarification_state(text)
+                    cl.user_session.set("original_user_question", text)
+                    memory.put(ChatMessage(role="user", content=text))
+                    return await handle_broad_general_question(text)
 
-        # Otherwise treat it as a valid clarification choice
-        return await handle_clarification_response(message, text)
+                # Otherwise treat it as a valid clarification choice
+                return await handle_clarification_response(message, text)
+        else:
+            # Not valid text but still in clarification, treat as choice
+            return await handle_clarification_response(message, text)
 
     # ─── 2. Continue hierarchical drilldown if in progress ──────────
     if cl.user_session.get("drill_level"):
@@ -1551,10 +1565,18 @@ async def handle_clarification_response(message: cl.Message, text: str):
             from collections import defaultdict
             all_nodes = cl.user_session.get("pre_drill_nodes") or []
             raw_h2 = defaultdict(list)
+            logger.info(f"🔍 H1 Selection Debug: Looking for H2s under selected_title: '{selected_title}'")
+            logger.info(f"🔍 Total nodes in pre_drill_nodes: {len(all_nodes)}")
+            
             for n in all_nodes:
                 path = n.node.metadata.get("section_path", [])
-                if len(path) >= 2 and path[0] == selected_title:
-                    raw_h2[path[1]].append(n)
+                if len(path) >= 2:
+                    logger.info(f"🔍 Node path[0]: '{path[0]}' vs selected: '{selected_title}' - Match: {path[0] == selected_title}")
+                    if path[0] == selected_title:
+                        raw_h2[path[1]].append(n)
+                        logger.info(f"🔍 ✅ Added H2: '{path[1]}' under H1: '{path[0]}'")
+            
+            logger.info(f"🔍 Found H2 sections: {list(raw_h2.keys())}")
 
             if not raw_h2:
                 logger.warning(f"🚨 No H2 under H1: {selected_title} — skipping to answer_from_node().")
@@ -1568,12 +1590,70 @@ async def handle_clarification_response(message: cl.Message, text: str):
                 ]
                 return await answer_from_node(matching_chunks, orig_q)
 
-            cl.user_session.set("clarification_level", 1)
-            cl.user_session.set("awaiting_clarification", True)
-            cl.user_session.set("hier_sections", dict(raw_h2))
-            cl.user_session.set("filtered_nodes", all_nodes)
-            logger.info(f"📋 Final H2s shown to user: {list(raw_h2.keys())}")
-            return await show_h2_options(message)
+            # Check if auto-selection is possible
+            if len(raw_h2) == 1:
+                # Auto-select the only H2 option
+                single_h2 = list(raw_h2.keys())[0]
+                logger.info(f"🔄 Auto-selecting single H2: '{single_h2}'")
+                
+                await cl.Message(
+                    content=f"🔄 พบหัวข้อย่อยเพียงหัวข้อเดียว กำลังเลือกอัตโนมัติ: **{single_h2}**",
+                    author="Customer Service Agent"
+                ).send()
+                
+                # Set up session for H2 selection
+                cl.user_session.set("selected_h2", single_h2)
+                selected_h2_nodes = raw_h2[single_h2]
+                
+                # Continue to H3 logic (same as clarification_level == 1)
+                from collections import defaultdict
+                raw_h3 = defaultdict(list)
+                for n in selected_h2_nodes:
+                    path = n.node.metadata.get("section_path", [])
+                    if len(path) >= 3 and path[2] and path[1] == single_h2: 
+                        raw_h3[path[2]].append(n)
+
+                if not raw_h3:
+                    logger.warning(f"🚨 No H3 under auto-selected H2: {single_h2} — answering directly.")
+                    clear_clarification_state()
+                    cl.user_session.set("awaiting_clarification", False)
+                    return await answer_from_node(selected_h2_nodes, user_q=message.content.strip())
+
+                # Check for H3 auto-selection
+                if len(raw_h3) == 1:
+                    # Auto-select the only H3 option
+                    single_h3 = list(raw_h3.keys())[0]
+                    logger.info(f"🔄 Auto-selecting single H3: '{single_h3}'")
+                    
+                    await cl.Message(
+                        content=f"🔄 พบหัวข้อย่อยเพียงหัวข้อเดียว กำลังเลือกอัตโนมัติ: **{single_h3}**",
+                        author="Customer Service Agent"
+                    ).send()
+                    
+                    # Final answer with auto-selected H3
+                    selected_h3_nodes = raw_h3[single_h3]
+                    cl.user_session.set("selected_h3", single_h3)
+                    cl.user_session.set("filtered_nodes", selected_h3_nodes)
+                    cl.user_session.set("awaiting_clarification", False)
+                    cl.user_session.set("clarification_just_exited", True)
+                    cl.user_session.set("last_answered_context", selected_h3_nodes)
+                    return await answer_from_node(selected_h3_nodes, user_q=message.content.strip())
+                else:
+                    # Multiple H3s - show choices
+                    cl.user_session.set("clarification_level", 2)
+                    cl.user_session.set("awaiting_clarification", True)
+                    cl.user_session.set("hier_sections", raw_h3)
+                    cl.user_session.set("filtered_nodes", selected_h2_nodes)
+                    logger.info(f"📋 Final H3s shown to user: {list(raw_h3.keys())}")
+                    return await show_h3_options(message)
+            else:
+                # Multiple H2s - show choices
+                cl.user_session.set("clarification_level", 1)
+                cl.user_session.set("awaiting_clarification", True)
+                cl.user_session.set("hier_sections", dict(raw_h2))
+                cl.user_session.set("filtered_nodes", all_nodes)
+                logger.info(f"📋 Final H2s shown to user: {list(raw_h2.keys())}")
+                return await show_h2_options(message)
 
         elif clarification_level == 1:
             # ✅ H2 selected → group and show H3
@@ -1581,10 +1661,18 @@ async def handle_clarification_response(message: cl.Message, text: str):
 
             from collections import defaultdict
             raw_h3 = defaultdict(list)
+            logger.info(f"🔍 H2 Selection Debug: Looking for H3s under selected H2: '{selected_title}'")
+            logger.info(f"🔍 Total nodes in selected_nodes: {len(selected_nodes)}")
+            
             for n in selected_nodes:
                 path = n.node.metadata.get("section_path", [])
-                if len(path) >= 3 and path[2] and path[1] == selected_title: 
-                    raw_h3[path[2]].append(n)
+                if len(path) >= 3 and path[2]:
+                    logger.info(f"🔍 Node path[1]: '{path[1]}' vs selected: '{selected_title}' - Match: {path[1] == selected_title}")
+                    if path[1] == selected_title: 
+                        raw_h3[path[2]].append(n)
+                        logger.info(f"🔍 ✅ Added H3: '{path[2]}' under H2: '{path[1]}'")
+            
+            logger.info(f"🔍 Found H3 sections: {list(raw_h3.keys())}")
 
             if not raw_h3:
                 logger.warning(f"🚨 No H3 under H2: {selected_title} — answering directly.")
@@ -1592,22 +1680,90 @@ async def handle_clarification_response(message: cl.Message, text: str):
                 cl.user_session.set("awaiting_clarification", False)
                 return await answer_from_node(selected_nodes, user_q=message.content.strip())
 
-            cl.user_session.set("clarification_level", 2)
-            cl.user_session.set("awaiting_clarification", True)
-            cl.user_session.set("hier_sections", raw_h3)
-            cl.user_session.set("filtered_nodes", selected_nodes)
-            logger.info(f"📋 Final H3s shown to user: {list(raw_h3.keys())}")
-            return await show_h3_options(message)
+            # Check if auto-selection is possible for H3
+            if len(raw_h3) == 1:
+                # Auto-select the only H3 option
+                single_h3 = list(raw_h3.keys())[0]
+                logger.info(f"🔄 Auto-selecting single H3: '{single_h3}'")
+                
+                await cl.Message(
+                    content=f"🔄 พบหัวข้อย่อยเพียงหัวข้อเดียว กำลังเลือกอัตโนมัติ: **{single_h3}**",
+                    author="Customer Service Agent"
+                ).send()
+                
+                # Final answer with auto-selected H3
+                selected_h3_nodes = raw_h3[single_h3]
+                cl.user_session.set("selected_h3", single_h3)
+                cl.user_session.set("filtered_nodes", selected_h3_nodes)
+                cl.user_session.set("awaiting_clarification", False)
+                cl.user_session.set("clarification_just_exited", True)
+                cl.user_session.set("last_answered_context", selected_h3_nodes)
+                return await answer_from_node(selected_h3_nodes, user_q=message.content.strip())
+            else:
+                # Multiple H3s - show choices
+                cl.user_session.set("clarification_level", 2)
+                cl.user_session.set("awaiting_clarification", True)
+                cl.user_session.set("hier_sections", raw_h3)
+                cl.user_session.set("filtered_nodes", selected_nodes)
+                logger.info(f"📋 Final H3s shown to user: {list(raw_h3.keys())}")
+                return await show_h3_options(message)
 
         elif clarification_level == 2:
-            # ✅ H3 selected → final answer
+            # ✅ H3 selected → check for H4 or final answer
             cl.user_session.set("selected_h3", selected_title)
-            cl.user_session.set("filtered_nodes", selected_nodes)
-            cl.user_session.set("awaiting_clarification", False)
-            cl.user_session.set("clarification_just_exited", True)
-            # --- Patch: Set last_answered_context before answer_from_node
-            cl.user_session.set("last_answered_context", selected_nodes)
-            return await answer_from_node(selected_nodes, user_q=message.content.strip())
+            
+            # Check if there are H4 sub-sections
+            from collections import defaultdict
+            raw_h4 = defaultdict(list)
+            logger.info(f"🔍 H3 Selection Debug: Looking for H4s under selected H3: '{selected_title}'")
+            logger.info(f"🔍 Total nodes in selected_nodes: {len(selected_nodes)}")
+            
+            for n in selected_nodes:
+                path = n.node.metadata.get("section_path", [])
+                if len(path) >= 4 and path[3]:
+                    logger.info(f"🔍 Node path[2]: '{path[2]}' vs selected: '{selected_title}' - Match: {path[2] == selected_title}")
+                    if path[2] == selected_title: 
+                        raw_h4[path[3]].append(n)
+                        logger.info(f"🔍 ✅ Added H4: '{path[3]}' under H3: '{path[2]}'")
+            
+            logger.info(f"🔍 Found H4 sections: {list(raw_h4.keys())}")
+            
+            if not raw_h4:
+                # No H4 - final answer
+                cl.user_session.set("filtered_nodes", selected_nodes)
+                cl.user_session.set("awaiting_clarification", False)
+                cl.user_session.set("clarification_just_exited", True)
+                cl.user_session.set("last_answered_context", selected_nodes)
+                return await answer_from_node(selected_nodes, user_q=message.content.strip())
+            
+            # Check if auto-selection is possible for H4
+            if len(raw_h4) == 1:
+                # Auto-select the only H4 option
+                single_h4 = list(raw_h4.keys())[0]
+                logger.info(f"🔄 Auto-selecting single H4: '{single_h4}'")
+                
+                await cl.Message(
+                    content=f"🔄 พบหัวข้อย่อยเพียงหัวข้อเดียว กำลังเลือกอัตโนมัติ: **{single_h4}**",
+                    author="Customer Service Agent"
+                ).send()
+                
+                # Final answer with auto-selected H4
+                selected_h4_nodes = raw_h4[single_h4]
+                cl.user_session.set("selected_h4", single_h4)
+                cl.user_session.set("filtered_nodes", selected_h4_nodes)
+                cl.user_session.set("awaiting_clarification", False)
+                cl.user_session.set("clarification_just_exited", True)
+                cl.user_session.set("last_answered_context", selected_h4_nodes)
+                return await answer_from_node(selected_h4_nodes, user_q=message.content.strip())
+            else:
+                # Multiple H4s - show choices (would need to implement show_h4_options)
+                # For now, just provide final answer since H4 choices aren't implemented
+                logger.info(f"📋 Found {len(raw_h4)} H4 options, but H4 choice UI not implemented - answering directly")
+                cl.user_session.set("filtered_nodes", selected_nodes)
+                cl.user_session.set("awaiting_clarification", False)
+                cl.user_session.set("clarification_just_exited", True)
+                cl.user_session.set("last_answered_context", selected_nodes)
+                return await answer_from_node(selected_nodes, user_q=message.content.strip())
 
     # ─── End hierarchical ───
 
@@ -1739,7 +1895,7 @@ async def is_broad_but_clear_question_llm(question: str) -> bool:
     prompt = (
         f'User asked: "{question}"\n\n'
         "Determine if this is a **broad, general policy-level** question that can be answered directly without needing further clarification.\n\n"
-        "✅ Answer 'Yes' if the question is asking for a **definition, general explanation, high-level process overview, or policy summary** (e.g., 'DOA คืออะไร', 'LOA ต่างจาก DOA อย่างไร', 'Process ในการสั่งซื้อ ต้องทำอย่างไรบ้าง', 'ขั้นตอนการทำสัญญาคืออะไร').\n"
+        "✅ Answer 'Yes' if the question is asking for a **definition, general explanation, high-level process overview, or policy summary** (e.g., 'DOA คืออะไร', 'LOA ต่างจาก DOA อย่างไร', 'Process ในการสั่งซื้อ ต้องทำอย่างไรบ้าง', 'ขั้นตอนการทำสัญญาคืออะไร', ใครคือ Chief Finance Officer).\n"
         "❌ Answer 'No' if the question includes **specific numbers, exact amounts, particular conditions, detailed scenarios, specific approvals, payment methods, or user-specific logic**.\n\n"
         "Respond with only 'Yes' or 'No'."
     )
@@ -1800,10 +1956,16 @@ async def handle_followup_or_clarification(message: cl.Message) -> Optional[cl.M
 
         # Do follow-up check if we just exited clarification (and have context) or have enough history
         do_check = False
-        if cl.user_session.get("clarification_just_exited") and last_ctx:
+        clarification_just_exited = cl.user_session.get("clarification_just_exited")
+        if clarification_just_exited and last_ctx:
             do_check = True
+            logger.info(f"🔍 Follow-up check triggered: clarification_just_exited={clarification_just_exited}, last_ctx_count={len(last_ctx) if last_ctx else 0}")
+            logger.info(f"🔍 User message: '{text}' - checking if it's a follow-up to previous H3 selection")
         elif len(valid_msgs) >= 6:
             do_check = True
+            logger.info(f"🔍 Follow-up check triggered: enough history ({len(valid_msgs)} messages)")
+        else:
+            logger.info(f"🔍 Follow-up check skipped: clarification_just_exited={clarification_just_exited}, last_ctx_exists={bool(last_ctx)}, msg_count={len(valid_msgs)}")
 
         if do_check:
             recent = valid_msgs[-6:] if valid_msgs else []
@@ -1833,6 +1995,11 @@ async def handle_followup_or_clarification(message: cl.Message) -> Optional[cl.M
         logger.info("🧠 Follow-up detected → reuse last_answered_context")
         if last_ctx:
             logger.info(f"🧩 Reusing last_answered_context with {len(last_ctx)} node(s).")
+            # Log the first node for debugging
+            if len(last_ctx) > 0:
+                first_node = last_ctx[0]
+                section_path = first_node.node.metadata.get("section_path", [])
+                logger.info(f"🧩 First node section_path: {section_path}")
         if memory:
             memory.put(ChatMessage(role="user", content=text))
         cl.user_session.set("clarification_just_exited", False)
@@ -1978,7 +2145,7 @@ async def handle_broad_general_question(user_q: str):
     dataset = DATASET_MAPPING.get(cl.user_session.get("chat_profile"))
     vector_store = qdrant_manager.get_vector_store(dataset, hybrid=True)
     index = VectorStoreIndex.from_vector_store(vector_store)
-    retriever = index.as_retriever(similarity_top_k=20)  # Get more results to find sub-topics
+    retriever = index.as_retriever(similarity_top_k=40)  # Increased to capture distant sections like Non-trade and Trade suppliers
     nodes = retriever.retrieve(user_q)
     
     top_k_for_answer = nodes[:5] if nodes else []
@@ -1994,19 +2161,24 @@ async def handle_broad_general_question(user_q: str):
     if top_k_for_answer:
         await provide_broad_summary(top_k_for_answer, user_q)
         
-        # Then check for sub-topics in the broader results
-        all_nodes = nodes[:20] if nodes else []
+        # Then check for sub-topics in the broader results - expanded to capture distant supplier sections
+        all_nodes = nodes[:35] if nodes else []
         
         # Group by H1 sections to find sub-topics
         h1_groups = defaultdict(list)
         for node in all_nodes:
             path = node.node.metadata.get("section_path", [])
-            if len(path) >= 1 and node.score >= 0.3:  # Only include relevant nodes
+            if len(path) >= 1 and node.score >= 0.25:  # Lowered to capture distant but related sections like Non-trade/Trade suppliers
                 h1_groups[path[0]].append(node)
         
         # Check if we have meaningful sub-topics to offer
         meaningful_h1_groups = {}
+        h1_similarity_scores = {}  # Track similarity scores for auto-selection
         user_q_lower = user_q.lower().strip()
+        
+        # Special handling for supplier questions - skip H1 selection and go directly to H2
+        supplier_keywords = ["คู่ค้า", "supplier", "vendor", "ซัพพลายเออร์"]
+        is_supplier_question = any(keyword in user_q_lower for keyword in supplier_keywords)
         
         # Filter out H1 topics that are too similar to the user question or not meaningful
         for h1_name, nodes in h1_groups.items():
@@ -2024,13 +2196,83 @@ async def handle_broad_general_question(user_q: str):
             
             if similarity < 0.80 and not is_definition_topic and len(significant_nodes) >= 2:
                 meaningful_h1_groups[h1_name] = nodes
+                h1_similarity_scores[h1_name] = similarity
                 logger.info(f"🔍 Keeping H1 topic: '{h1_name}' (similarity={similarity:.3f}, nodes={len(significant_nodes)})")
             else:
                 logger.info(f"🔍 Skipping H1 topic: '{h1_name}' (similarity={similarity:.3f}, definition={is_definition_topic}, nodes={len(significant_nodes)})")
         
-        # If there are multiple meaningful H1 sections, offer choices
+        # Check for supplier question auto-selection
+        supplier_h1_key = None
+        for h1_name in meaningful_h1_groups.keys():
+            if "Supplier/Vendor" in h1_name or "คู่ค้า" in h1_name:
+                supplier_h1_key = h1_name
+                break
+        
+        if is_supplier_question and supplier_h1_key:
+            # For supplier questions, automatically select Supplier/Vendor H1 and show H2 choices
+            supplier_h1_nodes = meaningful_h1_groups[supplier_h1_key]
+            
+            # Count H2 sub-topics within Supplier/Vendor H1
+            h2_in_supplier = defaultdict(list)
+            for node in supplier_h1_nodes:
+                path = node.node.metadata.get("section_path", [])
+                if len(path) >= 2:
+                    h2_in_supplier[path[1]].append(node)
+            
+            logger.info(f"🔍 [Supplier Q] Auto-selected '{supplier_h1_key}' H1, found {len(h2_in_supplier)} H2 sub-topics")
+            for h2_name, h2_nodes in h2_in_supplier.items():
+                logger.info(f"🔍 [Supplier Q]   H2: '{h2_name}' ({len(h2_nodes)} nodes)")
+            
+            if len(h2_in_supplier) > 1:
+                # Show H2 choices directly for supplier questions
+                h2_options = list(h2_in_supplier.keys())
+                cl.user_session.set("selected_h1", "Supplier/Vendor")
+                cl.user_session.set("h2_options", h2_options)
+                cl.user_session.set("hier_sections", h2_in_supplier)
+                cl.user_session.set("pre_drill_nodes", supplier_h1_nodes)
+                cl.user_session.set("pre_drill_query", user_q)
+                
+                await cl.Message(
+                    content=f"\n\n📚 พบหัวข้อที่เกี่ยวข้องเพิ่มเติม หากต้องการข้อมูลเฉพาะเจาะจงมากขึ้น:",
+                    author="Customer Service Agent"
+                ).send()
+                
+                return await show_h2_options(None)
+            else:
+                # Only one H2 under Supplier/Vendor, continue to normal logic
+                logger.info(f"🔍 [Supplier Q] Only 1 H2 sub-topic, continuing to normal logic")
+        
+        # Check for H1 auto-selection based on similarity threshold
+        H1_AUTO_SELECT_THRESHOLD = 0.4  # Auto-select if similarity > 40%
         if len(meaningful_h1_groups) > 1:
-            logger.info(f"🔍 Found {len(meaningful_h1_groups)} meaningful H1 topics - offering choices")
+            # Log all H1 scores for debugging
+            logger.info(f"🔍 Found {len(meaningful_h1_groups)} meaningful H1 topics with scores:")
+            for h1_name, score in h1_similarity_scores.items():
+                logger.info(f"🔍   '{h1_name}': {score:.3f}")
+            
+            # Find highest scoring H1
+            best_h1 = max(h1_similarity_scores.items(), key=lambda x: x[1])
+            best_h1_name, best_h1_score = best_h1
+            
+            if best_h1_score >= H1_AUTO_SELECT_THRESHOLD:
+                logger.info(f"🎯 H1 auto-selected (high similarity): '{best_h1_name}' (score={best_h1_score:.3f} >= {H1_AUTO_SELECT_THRESHOLD})")
+                
+                await cl.Message(
+                    content=f"🔄 พบหัวข้อที่ตรงกับคำถามมากที่สุด กำลังเลือกอัตโนมัติ: **{best_h1_name}**",
+                    author="Customer Service Agent"
+                ).send()
+                
+                # Set up session for H1 auto-selection
+                cl.user_session.set("selected_h1", best_h1_name)
+                selected_h1_nodes = meaningful_h1_groups[best_h1_name]
+                cl.user_session.set("pre_drill_nodes", selected_h1_nodes)
+                
+                # Continue to H2 logic (similar to manual H1 selection)
+                from chainlit.message import Message as clMessage
+                fake_msg = clMessage(content=best_h1_name)
+                return await handle_standard_query(fake_msg)
+            
+            logger.info(f"🔍 No auto-selection (best score {best_h1_score:.3f} < {H1_AUTO_SELECT_THRESHOLD}) - offering choices")
             
             # Set up for showing H1 options
             h1_options = list(meaningful_h1_groups.keys())
@@ -2843,8 +3085,14 @@ async def handle_standard_query(message: cl.Message):
         logger.info(f"🔍 Node {idx+1}: path={path}, score={score}")
 
 
-    max_depth    = max(len(n.node.metadata.get("section_path", [])) for n in all_pre_drill)
-    target_depth = max_depth - 1
+    # Safety check for empty sequence
+    if not all_pre_drill:
+        logger.warning("⚠️ all_pre_drill is empty - cannot calculate max_depth")
+        max_depth = 0
+        target_depth = 0
+    else:
+        max_depth = max(len(n.node.metadata.get("section_path", [])) for n in all_pre_drill)
+        target_depth = max_depth - 1
 
     # only consider when our best_node is at the deepest H3 level
     if depth >= 3 and depth == target_depth and best_node.score >= DEEP_DIRECT_THRESHOLD:
