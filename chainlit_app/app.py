@@ -1377,7 +1377,7 @@ async def on_message(message: cl.Message):
             is_broad = await is_broad_but_clear_question_llm(text)
             if is_broad:
                 logger.info("🧠 Broad question detected during clarification — skipping clarification.")
-                reset_clarification_state()
+                reset_clarification_state(text)
                 cl.user_session.set("original_user_question", text)
                 memory.put(ChatMessage(role="user", content=text))
                 return await handle_broad_general_question(text)
@@ -1739,8 +1739,8 @@ async def is_broad_but_clear_question_llm(question: str) -> bool:
     prompt = (
         f'User asked: "{question}"\n\n'
         "Determine if this is a **broad, general policy-level** question that can be answered directly without needing further clarification.\n\n"
-        "✅ Answer 'Yes' if the question is asking for a **definition, general explanation, or high-level policy overview** (e.g., 'DOA คืออะไร', 'LOA ต่างจาก DOA อย่างไร').\n"
-        "❌ Answer 'No' if the question includes **numbers, amounts, conditions, scenarios, specific approvals, steps, payment methods, or user-specific logic**.\n\n"
+        "✅ Answer 'Yes' if the question is asking for a **definition, general explanation, high-level process overview, or policy summary** (e.g., 'DOA คืออะไร', 'LOA ต่างจาก DOA อย่างไร', 'Process ในการสั่งซื้อ ต้องทำอย่างไรบ้าง', 'ขั้นตอนการทำสัญญาคืออะไร').\n"
+        "❌ Answer 'No' if the question includes **specific numbers, exact amounts, particular conditions, detailed scenarios, specific approvals, payment methods, or user-specific logic**.\n\n"
         "Respond with only 'Yes' or 'No'."
     )
     try:
@@ -1892,15 +1892,75 @@ async def handle_followup_or_clarification(message: cl.Message) -> Optional[cl.M
             return await answer_from_node(last_ctx, user_q=text)
         else:
             logger.error("🚨 No fallback context (last_ctx) available to answer the follow-up.")
-            return await cl.Message(content="ขออภัย ไม่พบข้อมูลที่เกี่ยวข้องกับคำถามนี้").send()
+            return await send_with_feedback("ขออภัย ไม่พบข้อมูลที่เกี่ยวข้องกับคำถามนี้")
 
     return None
+
+async def provide_broad_summary(top_k_nodes, user_q: str):
+    """Provide a concise summary for broad questions instead of full detailed answer."""
+    
+    # Start animated message as a background task
+    animation_task = asyncio.create_task(
+        send_animated_message(
+            base_msg="กำลังเช็ค Policy ให้อยู่ รอสักครู่นะคะ...",
+            frames=["🌑","🌒","🌓","🌔","🌕","🌖","🌗","🌘"],
+            interval=0.3
+        )
+    )
+    
+    try:
+        # Combine the top nodes content
+        combined_content = ""
+        for node in top_k_nodes:
+            chunk = node.node.text or ""
+            combined_content += chunk + "\n\n"
+        
+        # Create a summary prompt
+        llm = get_llm_settings(cl.user_session.get("chat_profile"))
+        summary_prompt = (
+            f'คำถาม: "{user_q}"\n\n'
+            f'เอกสาร:\n{combined_content}\n\n'
+            'โปรดให้สรุปภาพรวมที่กระชับและชัดเจนเกี่ยวกับหัวข้อนี้ โดย:\n'
+            '- ใช้ภาษาง่าย ๆ ที่เข้าใจได้\n'
+            '- ความยาวไม่เกิน 3-4 ประโยค\n'
+            '- เน้นแนวคิดหลักและจุดสำคัญเท่านั้น\n'
+            '- ไม่ต้องให้รายละเอียดขั้นตอนหรือเอกสารทั้งหมด\n'
+            '- หากมีหลายประเภทหรือกรณี ให้กล่าวถึงแบบสรุป\n\n'
+            'ตอบเป็นภาษาไทย:'
+        )
+        
+        # Let animation run for a bit before making LLM call
+        await asyncio.sleep(1.0)
+        
+        response = llm.chat([ChatMessage(role="user", content=summary_prompt)])
+        summary_text = response.message.content.strip()
+        
+        # Stop the animation
+        animation_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await animation_task
+        
+        # Send the summary with typewriting effect
+        await send_with_feedback(summary_text)
+        
+        logger.info(f"📝 Provided broad summary for: {user_q}")
+        
+    except Exception as e:
+        # Stop the animation on error
+        animation_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await animation_task
+            
+        logger.error(f"Error generating broad summary: {e}")
+        # Fallback to regular answer if summary fails
+        await answer_from_node(top_k_nodes, user_q=user_q)
         
 async def handle_broad_general_question(user_q: str):
-    """Handles a broad general question by skipping clarification and retrieving directly via vector."""
+    """Handles a broad general question by first providing summary, then offering sub-topics if available."""
     from llama_index.core import VectorStoreIndex
+    from collections import defaultdict
 
-    logger.info("✅ Broad general question — answering directly using LLM with top_k context")
+    logger.info("✅ Broad general question — providing summary first, then checking for sub-topics")
 
     cl.user_session.set("awaiting_clarification", False)
     cl.user_session.set("clarification_level", None)
@@ -1914,15 +1974,15 @@ async def handle_broad_general_question(user_q: str):
     else:
         logger.info(f"🚫 Skipped setting original_user_question on broad-skip: {user_q}")
 
-    # 🧠 Run vector search
+    # 🧠 Run vector search with more results to find sub-topics
     dataset = DATASET_MAPPING.get(cl.user_session.get("chat_profile"))
     vector_store = qdrant_manager.get_vector_store(dataset, hybrid=True)
     index = VectorStoreIndex.from_vector_store(vector_store)
-    retriever = index.as_retriever(similarity_top_k=5)
+    retriever = index.as_retriever(similarity_top_k=20)  # Get more results to find sub-topics
     nodes = retriever.retrieve(user_q)
-    top_k = nodes[:5] if nodes else []
-
-    top_score = top_k[0].score if top_k and hasattr(top_k[0], "score") else 0.0
+    
+    top_k_for_answer = nodes[:5] if nodes else []
+    top_score = top_k_for_answer[0].score if top_k_for_answer and hasattr(top_k_for_answer[0], "score") else 0.0
     logger.info(f"🔍 Top vector score = {top_score:.3f}")
 
     # Save user question in memory
@@ -1930,12 +1990,118 @@ async def handle_broad_general_question(user_q: str):
     if memory:
         memory.put(ChatMessage(role="user", content=user_q))
 
-    # Return answer
-    if top_k:
-        return await answer_from_node(top_k, user_q=user_q)
+    # First, provide a concise summary answer
+    if top_k_for_answer:
+        await provide_broad_summary(top_k_for_answer, user_q)
+        
+        # Then check for sub-topics in the broader results
+        all_nodes = nodes[:20] if nodes else []
+        
+        # Group by H1 sections to find sub-topics
+        h1_groups = defaultdict(list)
+        for node in all_nodes:
+            path = node.node.metadata.get("section_path", [])
+            if len(path) >= 1 and node.score >= 0.3:  # Only include relevant nodes
+                h1_groups[path[0]].append(node)
+        
+        # Check if we have meaningful sub-topics to offer
+        meaningful_h1_groups = {}
+        user_q_lower = user_q.lower().strip()
+        
+        # Filter out H1 topics that are too similar to the user question or not meaningful
+        for h1_name, nodes in h1_groups.items():
+            h1_lower = h1_name.lower().strip()
+            
+            # Skip if H1 is too similar to user question (fuzzy match > 80%)
+            from difflib import SequenceMatcher
+            similarity = SequenceMatcher(None, user_q_lower, h1_lower).ratio()
+            
+            # Skip if it's just a definition/meaning topic when user asked broad question
+            is_definition_topic = any(word in h1_lower for word in ['ความหมาย', 'คือ', 'definition', 'วัตถุประสงค์'])
+            
+            # Skip if too few nodes (less than 2 meaningful nodes)
+            significant_nodes = [n for n in nodes if n.score >= 0.35]
+            
+            if similarity < 0.80 and not is_definition_topic and len(significant_nodes) >= 2:
+                meaningful_h1_groups[h1_name] = nodes
+                logger.info(f"🔍 Keeping H1 topic: '{h1_name}' (similarity={similarity:.3f}, nodes={len(significant_nodes)})")
+            else:
+                logger.info(f"🔍 Skipping H1 topic: '{h1_name}' (similarity={similarity:.3f}, definition={is_definition_topic}, nodes={len(significant_nodes)})")
+        
+        # If there are multiple meaningful H1 sections, offer choices
+        if len(meaningful_h1_groups) > 1:
+            logger.info(f"🔍 Found {len(meaningful_h1_groups)} meaningful H1 topics - offering choices")
+            
+            # Set up for showing H1 options
+            h1_options = list(meaningful_h1_groups.keys())
+            cl.user_session.set("h1_options", h1_options)
+            cl.user_session.set("pre_drill_nodes", all_nodes)
+            cl.user_session.set("pre_drill_query", user_q)
+            
+            # Build raw_h1 for the choice handler
+            raw_h1 = {h1: nodes for h1, nodes in meaningful_h1_groups.items()}
+            cl.user_session.set("raw_h1", raw_h1)
+            
+            # Show additional choices message
+            await cl.Message(
+                content=f"\n\n📚 พบหัวข้อที่เกี่ยวข้องเพิ่มเติม หากต้องการข้อมูลเฉพาะเจาะจงมากขึ้น:",
+                author="Customer Service Agent"
+            ).send()
+            
+            return await show_h1_options(None)
+        else:
+            # Check for H2 sub-topics within the main H1 (or use first meaningful group if available)
+            target_h1 = None
+            if meaningful_h1_groups:
+                target_h1 = list(meaningful_h1_groups.keys())[0]
+                target_nodes = meaningful_h1_groups[target_h1]
+            elif h1_groups:
+                target_h1 = list(h1_groups.keys())[0]
+                target_nodes = h1_groups[target_h1]
+            
+            if target_h1 and target_nodes:
+                h2_groups = defaultdict(list)
+                for node in target_nodes:
+                    path = node.node.metadata.get("section_path", [])
+                    if len(path) >= 2:
+                        h2_groups[path[1]].append(node)
+                
+                # Filter meaningful H2 topics
+                meaningful_h2_groups = {}
+                for h2_name, nodes in h2_groups.items():
+                    h2_lower = h2_name.lower().strip()
+                    
+                    # Skip if too similar to user question
+                    similarity = SequenceMatcher(None, user_q_lower, h2_lower).ratio()
+                    significant_nodes = [n for n in nodes if n.score >= 0.35]
+                    
+                    if similarity < 0.80 and len(significant_nodes) >= 1:
+                        meaningful_h2_groups[h2_name] = nodes
+                        logger.info(f"🔍 Keeping H2 topic: '{h2_name}' (similarity={similarity:.3f}, nodes={len(significant_nodes)})")
+                    else:
+                        logger.info(f"🔍 Skipping H2 topic: '{h2_name}' (similarity={similarity:.3f}, nodes={len(significant_nodes)})")
+                
+                if len(meaningful_h2_groups) > 1:
+                    logger.info(f"🔍 Found {len(meaningful_h2_groups)} meaningful H2 sub-topics under '{target_h1}' - offering choices")
+                    
+                    # Set up for showing H2 options
+                    cl.user_session.set("selected_h1", target_h1)
+                    cl.user_session.set("clarification_level", 1)
+                    cl.user_session.set("awaiting_clarification", True)
+                    cl.user_session.set("hier_sections", dict(meaningful_h2_groups))
+                    cl.user_session.set("pre_drill_nodes", all_nodes)
+                    
+                    await cl.Message(
+                        content=f"\n\n📚 พบหัวข้อย่อยเพิ่มเติมใน '{target_h1}' หากต้องการข้อมูลเฉพาะเจาะจงมากขึ้น:",
+                        author="Customer Service Agent"
+                    ).send()
+                    
+                    return await show_h2_options(None)
+            
+            logger.info("🔍 No meaningful sub-topics found - answer complete")
     else:
         logger.warning("⚠️ No top_k results available to answer from.")
-        return await cl.Message(content="ขออภัย ไม่พบข้อมูลที่เกี่ยวข้องในระบบ").send()
+        return await send_with_feedback("ขออภัย ไม่พบข้อมูลที่เกี่ยวข้องในระบบ")
 
 def reset_clarification_state(user_q: str):
     logger.info("🧠 New topic detected → clearing memory and running full drill flow")
@@ -2867,13 +3033,72 @@ async def handle_standard_query(message: cl.Message):
     ordered_h1 = sorted(section_scores.items(), key=lambda x: x[1], reverse=True)
     logger.info("📊 H1 candidates by score: %s", ordered_h1)
 
-    if len(ordered_h1) >= 2:
+    # H1 Auto-selection thresholds
+    H1_AUTO_SELECT_THRESHOLD = 0.60  # Minimum score for auto-selection
+    H1_AUTO_SELECT_GAP = 0.08        # Minimum gap for auto-selection
+    H1_FUZZY_MATCH_THRESHOLD = 0.85  # Minimum fuzzy match similarity for auto-selection
+
+    # Check for fuzzy match between user input and H1 choices
+    from difflib import SequenceMatcher
+    user_input_clean = current_q.strip().lower()
+    best_fuzzy_match = None
+    best_fuzzy_score = 0.0
+    
+    logger.info(f"🔍 Checking fuzzy match for user input: '{current_q.strip()}'")
+    for h1_name, h1_score in ordered_h1:
+        h1_clean = h1_name.strip().lower()
+        fuzzy_score = SequenceMatcher(None, user_input_clean, h1_clean).ratio()
+        logger.info(f"🔍 H1 '{h1_name}' fuzzy similarity: {fuzzy_score:.3f}")
+        
+        if fuzzy_score > best_fuzzy_score:
+            best_fuzzy_score = fuzzy_score
+            best_fuzzy_match = h1_name
+    
+    logger.info(f"🔍 Best fuzzy match: '{best_fuzzy_match}' with score {best_fuzzy_score:.3f} (threshold: {H1_FUZZY_MATCH_THRESHOLD})")
+    
+    # Auto-select if fuzzy match exceeds threshold
+    if best_fuzzy_score >= H1_FUZZY_MATCH_THRESHOLD:
+        logger.info(f"🎯 H1 auto-selected (fuzzy match): '{best_fuzzy_match}' (similarity={best_fuzzy_score:.3f})")
+        cl.user_session.set("selected_h1", best_fuzzy_match)
+        # Continue to H2 logic below
+    elif len(ordered_h1) == 1:
+        # Only one H1 available - auto-select if score is high enough
+        top_h1, top_score = ordered_h1[0]
+        if top_score >= H1_AUTO_SELECT_THRESHOLD:
+            logger.info(f"🎯 H1 auto-selected (only option): '{top_h1}' (score={top_score:.3f})")
+            cl.user_session.set("selected_h1", top_h1)
+            # Continue to H2 logic below
+        else:
+            logger.info(f"🔍 Single H1 score too low ({top_score:.3f} < {H1_AUTO_SELECT_THRESHOLD}) - showing options")
+            cl.user_session.set("drill_level", "h1")
+            cl.user_session.set("h1_options", [top_h1])
+            cl.user_session.set("pre_drill_query", current_q)
+            cl.user_session.set("pre_drill_nodes", all_doc_nodes)
+            
+            if (
+                cl.user_session.get("original_user_question") is None
+                and len(current_q.strip()) > 3
+                and not current_q.strip().isdigit()
+                and not re.fullmatch(r"^[0-9]+$", current_q.strip())
+                and not current_q.lower().startswith("clarified:")
+            ):
+                cl.user_session.set("original_user_question", current_q)
+                logger.info(f"📌 Set original_user_question = {current_q}")
+            
+            return await show_h1_options(message)
+    
+    elif len(ordered_h1) >= 2:
         top_h1, top_score = ordered_h1[0]
         second_h1, second_score = ordered_h1[1]
         score_gap = top_score - second_score
         logger.info("🔍 H1 score gap = %.3f", score_gap)
 
-        if score_gap < 0.08:  # not a big gap, means ambiguity
+        # Auto-select H1 if high confidence and clear winner
+        if top_score >= H1_AUTO_SELECT_THRESHOLD and score_gap >= H1_AUTO_SELECT_GAP:
+            logger.info(f"🎯 H1 auto-selected: '{top_h1}' (score={top_score:.3f}, gap={score_gap:.3f})")
+            cl.user_session.set("selected_h1", top_h1)
+            # Continue to H2 logic below instead of showing H1 options
+        elif score_gap < 0.08:  # not a big gap, means ambiguity
             cl.user_session.set("drill_level", "h1")
 
             # Filter H1s with score > 0.5
@@ -3017,7 +3242,7 @@ async def handle_standard_query(message: cl.Message):
             await answer_from_node(fallback_chunks, message.content)
         else:
             logger.warning("⚠️ No fallback chunks available for selected_h1")
-            await cl.Message("⚠️ ไม่พบเนื้อหาในหัวข้อนี้").send()
+            await send_with_feedback("⚠️ ไม่พบเนื้อหาในหัวข้อนี้")
 
         return
 
