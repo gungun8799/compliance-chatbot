@@ -2344,9 +2344,11 @@ async def handle_broad_general_question(user_q: str):
     retriever = index.as_retriever(similarity_top_k=40)  # Increased to capture distant sections like Non-trade and Trade suppliers
     nodes = retriever.retrieve(user_q)
     
-    top_k_for_answer = nodes[:5] if nodes else []
+    # Include more nodes for comprehensive summary - use nodes with score >= 0.40 or top 12, whichever is smaller
+    high_score_nodes = [n for n in nodes if hasattr(n, 'score') and n.score >= 0.40] if nodes else []
+    top_k_for_answer = high_score_nodes[:12] if len(high_score_nodes) <= 12 else nodes[:12]
     top_score = top_k_for_answer[0].score if top_k_for_answer and hasattr(top_k_for_answer[0], "score") else 0.0
-    logger.info(f"🔍 Top vector score = {top_score:.3f}")
+    logger.info(f"🔍 Using {len(top_k_for_answer)} nodes for summary (top score = {top_score:.3f})")
 
     # Save user question in memory
     memory = cl.user_session.get("memory")
@@ -2387,15 +2389,19 @@ async def handle_broad_general_question(user_q: str):
             # Skip if it's just a definition/meaning topic when user asked broad question
             is_definition_topic = any(word in h1_lower for word in ['ความหมาย', 'คือ', 'definition', 'วัตถุประสงค์'])
             
-            # Skip if too few nodes (less than 2 meaningful nodes)
+            # Count significant nodes (score >= 0.35) and highly relevant nodes (score >= 0.50)
             significant_nodes = [n for n in nodes if n.score >= 0.35]
+            highly_relevant_nodes = [n for n in nodes if n.score >= 0.50]
             
-            if similarity < 0.80 and not is_definition_topic and len(significant_nodes) >= 2:
+            # Keep H1 if: not too similar, not definition, and either has multiple significant nodes OR has at least 1 highly relevant node
+            has_enough_content = len(significant_nodes) >= 2 or len(highly_relevant_nodes) >= 1
+            
+            if similarity < 0.80 and not is_definition_topic and has_enough_content:
                 meaningful_h1_groups[h1_name] = nodes
                 h1_similarity_scores[h1_name] = similarity
-                logger.info(f"🔍 Keeping H1 topic: '{h1_name}' (similarity={similarity:.3f}, nodes={len(significant_nodes)})")
+                logger.info(f"🔍 Keeping H1 topic: '{h1_name}' (similarity={similarity:.3f}, significant_nodes={len(significant_nodes)}, highly_relevant={len(highly_relevant_nodes)})")
             else:
-                logger.info(f"🔍 Skipping H1 topic: '{h1_name}' (similarity={similarity:.3f}, definition={is_definition_topic}, nodes={len(significant_nodes)})")
+                logger.info(f"🔍 Skipping H1 topic: '{h1_name}' (similarity={similarity:.3f}, definition={is_definition_topic}, significant_nodes={len(significant_nodes)}, highly_relevant={len(highly_relevant_nodes)})")
         
         # Check for supplier question auto-selection
         supplier_h1_key = None
@@ -2562,14 +2568,27 @@ async def handle_broad_general_question(user_q: str):
             
             logger.info(f"🔍 No auto-selection (best score {best_h1_score:.3f} < {H1_AUTO_SELECT_THRESHOLD}) - offering choices")
             
-            # Set up for showing H1 options
-            h1_options = list(meaningful_h1_groups.keys())
+            # Sort H1 options by their highest node score and limit to top 5
+            h1_scores = {}
+            for h1_name, nodes in meaningful_h1_groups.items():
+                # Get the highest score among all nodes in this H1
+                max_score = max(node.score for node in nodes) if nodes else 0.0
+                h1_scores[h1_name] = max_score
+            
+            # Sort by score (highest first) and take top 5
+            sorted_h1_choices = sorted(h1_scores.items(), key=lambda x: x[1], reverse=True)[:5]
+            h1_options = [h1_name for h1_name, _ in sorted_h1_choices]
+            
+            logger.info(f"🔍 Limited to top {len(h1_options)} H1 choices based on vector scores:")
+            for i, (h1_name, score) in enumerate(sorted_h1_choices, 1):
+                logger.info(f"🔍   {i}. {h1_name} (max_score: {score:.3f})")
+            
             cl.user_session.set("h1_options", h1_options)
             cl.user_session.set("pre_drill_nodes", all_nodes)
             cl.user_session.set("pre_drill_query", user_q)
             
-            # Build raw_h1 for the choice handler
-            raw_h1 = {h1: nodes for h1, nodes in meaningful_h1_groups.items()}
+            # Build raw_h1 for the choice handler (only top 5 choices)
+            raw_h1 = {h1: meaningful_h1_groups[h1] for h1 in h1_options}
             cl.user_session.set("raw_h1", raw_h1)
             
             # Show additional choices message
@@ -3458,12 +3477,44 @@ async def handle_standard_query(message: cl.Message):
                 ]
                 logger.info(f"🏷 D&B question detected: including {len(matching_section)} D&B-related nodes from both Trade and Non-trade sections")
             else:
-                # Use all nodes from the same section_path as the best_node
-                section_path = best_node.node.metadata.get("section_path", [])
-                matching_section = [
-                    n for n in all_nodes
-                    if n.node.metadata.get("section_path", []) == section_path
-                ]
+                # Check if question spans multiple categories (CAPEX, OPEX, etc.)
+                query_lower = text.lower()
+                spans_multiple_categories = any([
+                    "capex" in query_lower and "opex" in query_lower,
+                    ("capex" in query_lower or "ลงทุน" in query_lower) and ("opex" in query_lower or "ดำเนินงาน" in query_lower),
+                    "และ" in query_lower and any(cat in query_lower for cat in ["capex", "opex", "ลงทุน", "ดำเนินงาน"])
+                ])
+                
+                best_path = best_node.node.metadata.get("section_path", [])
+                
+                if spans_multiple_categories and len(best_path) >= 1:
+                    # For questions spanning multiple categories, use H1 level to capture both CAPEX and OPEX
+                    parent_section = best_path[:1]
+                    matching_section = [
+                        n for n in all_nodes
+                        if len(n.node.metadata.get("section_path", [])) >= 1 and 
+                           n.node.metadata["section_path"][:1] == parent_section
+                    ]
+                    logger.info(f"🏷 Multi-category question: using all nodes under H1 section: {' / '.join(parent_section)} ({len(matching_section)} nodes)")
+                elif len(best_path) >= 2:
+                    # Single category: use H2 level to capture all related subsections
+                    parent_section = best_path[:2]
+                    matching_section = [
+                        n for n in all_nodes
+                        if len(n.node.metadata.get("section_path", [])) >= 2 and 
+                           n.node.metadata["section_path"][:2] == parent_section
+                    ]
+                    logger.info(f"🏷 Using all nodes under H2 section: {' / '.join(parent_section)} ({len(matching_section)} nodes)")
+                else:
+                    # Fallback: use exact section_path match
+                    matching_section = [
+                        n for n in all_nodes
+                        if n.node.metadata.get("section_path", []) == best_path
+                    ]
+                    logger.info(f"🏷 Using exact section match: {' / '.join(best_path)} ({len(matching_section)} nodes)")
+                
+                # Sort by score and limit to prevent context overflow  
+                matching_section = sorted(matching_section, key=lambda x: getattr(x, 'score', 0), reverse=True)[:25]
 
             clear_clarification_state()
             cl.user_session.set("awaiting_clarification", False)
