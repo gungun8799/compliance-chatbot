@@ -2272,11 +2272,25 @@ async def provide_broad_summary(top_k_nodes, user_q: str):
     )
     
     try:
-        # Combine the top nodes content
+        # Combine the top nodes content and log document sources
         combined_content = ""
-        for node in top_k_nodes:
+        doc_sources = {}
+        for i, node in enumerate(top_k_nodes, 1):
             chunk = node.node.text or ""
             combined_content += chunk + "\n\n"
+            
+            # Track document sources
+            source_doc = node.node.metadata.get("source", "Unknown")
+            if source_doc not in doc_sources:
+                doc_sources[source_doc] = 0
+            doc_sources[source_doc] += 1
+            
+            logger.info(f"📄 Summary node {i}: source={source_doc}, score={getattr(node, 'score', 'N/A'):.3f}")
+        
+        # Log summary of document sources
+        logger.info(f"📊 Summary using nodes from {len(doc_sources)} documents:")
+        for doc, count in doc_sources.items():
+            logger.info(f"📊   {doc}: {count} nodes")
         
         # Create a summary prompt
         llm = get_llm_settings(cl.user_session.get("chat_profile"))
