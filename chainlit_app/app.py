@@ -577,6 +577,7 @@ def clear_clarification_state():
 
         "h1_options",
         "drill_level",
+        "clarification_just_exited",
 
     ]:
         cl.user_session.set(key, None)
@@ -700,8 +701,13 @@ async def answer_from_node(node_or_nodes, user_q: str):
         f'📄 เอกสารนโยบาย: "{source}"\n\n'
         f'เนื้อหาที่เกี่ยวข้องมีดังนี้:\n"""{full_text}\n"""\n\n'
         "กรุณาตอบโดยอ้างอิงรายละเอียดทั้งหมดจากเนื้อหานี้อย่างครบถ้วนและระบุเงื่อนไขที่เกี่ยวข้องให้ชัดเจน "
-        "หากมีกรณีหรือเงื่อนไขพิเศษ โปรดแสดงให้ครบทุกกรณี เช่น “ถ้า…ให้…” หรือ “ในกรณีที่…ต้อง…” "
-        "และอย่าสรุปรวมหลายเงื่อนไขเป็นบรรทัดเดียว"
+        "หากมีกรณีหรือเงื่อนไขพิเศษ โปรดแสดงให้ครบทุกกรณี เช่น \"ถ้า...ให้...\" หรือ \"ในกรณีที่...ต้อง...\" "
+        "และอย่าสรุปรวมหลายเงื่อนไขเป็นบรรทัดเดียว "
+        "**สำคัญมาก:\\n"
+        "1. ใช้เฉพาะข้อมูลในเนื้อหาข้างต้นเท่านั้น ห้ามสร้างคำตอบจากความรู้ภายนอกหรือสมมติขึ้นเอง\\n"
+        "2. หากเป็นคำถามเกี่ยวกับจำนวนเงิน ให้เปรียบเทียบตัวเลขอย่างระมัดระวัง เช่น 400,000,000 > 100,000,000\\n"
+        "3. ตอบด้วยตำแหน่งที่ระบุในเนื้อหาเท่านั้น เช่น Group CEO, CEO, Senior Director ฯลฯ\\n"
+        "4. ห้ามใช้คำตอบที่ไม่ได้ระบุในเนื้อหา เช่น CP Axtra ExCom หรือชื่ออื่นๆ ที่ไม่มีในเอกสาร**"
     )
     logger.info(f"🧠 Final LLM prompt = \n{prompt}")
 
@@ -1626,6 +1632,7 @@ async def handle_clarification_response(message: cl.Message, text: str):
                     return await answer_from_node(selected_h2_nodes, user_q=message.content.strip())
 
                 # Check for H3 auto-selection
+                logger.info(f"🔍 H3 auto-selection check: raw_h3 has {len(raw_h3)} entries: {list(raw_h3.keys())}")
                 if len(raw_h3) == 1:
                     # Auto-select the only H3 option
                     single_h3 = list(raw_h3.keys())[0]
@@ -1640,10 +1647,21 @@ async def handle_clarification_response(message: cl.Message, text: str):
                     selected_h3_nodes = raw_h3[single_h3]
                     cl.user_session.set("selected_h3", single_h3)
                     cl.user_session.set("filtered_nodes", selected_h3_nodes)
+                    clear_clarification_state()
                     cl.user_session.set("awaiting_clarification", False)
-                    cl.user_session.set("clarification_just_exited", True)
                     cl.user_session.set("last_answered_context", selected_h3_nodes)
-                    return await answer_from_node(selected_h3_nodes, user_q=message.content.strip())
+                    
+                    try:
+                        # Ensure clarification_just_exited is cleared before proceeding
+                        cl.user_session.set("clarification_just_exited", False)
+                        logger.info("🎯 H3 auto-selection: calling answer_from_node")
+                        await answer_from_node(selected_h3_nodes, user_q=message.content.strip())
+                        logger.info("✅ H3 auto-selection: answer_from_node completed successfully")
+                        return
+                    except Exception as e:
+                        logger.error(f"❌ H3 auto-selection: error in answer_from_node: {e}")
+                        await cl.Message(f"เกิดข้อผิดพลาดในการประมวลผล: {e}").send()
+                        return
                 else:
                     # Check for keyword-based auto-selection for specific questions
                     original_question = cl.user_session.get("original_user_question", "").lower()
@@ -1761,7 +1779,21 @@ async def handle_clarification_response(message: cl.Message, text: str):
                 selected_h3_nodes = raw_h3[single_h3]
                 cl.user_session.set("selected_h3", single_h3)
                 cl.user_session.set("filtered_nodes", selected_h3_nodes)
+                clear_clarification_state()
                 cl.user_session.set("awaiting_clarification", False)
+                cl.user_session.set("last_answered_context", selected_h3_nodes)
+                
+                try:
+                    # Ensure clarification_just_exited is cleared before proceeding
+                    cl.user_session.set("clarification_just_exited", False)
+                    logger.info("🎯 H3 auto-selection (manual H2 path): calling answer_from_node")
+                    await answer_from_node(selected_h3_nodes, user_q=message.content.strip())
+                    logger.info("✅ H3 auto-selection (manual H2 path): answer_from_node completed successfully")
+                    return
+                except Exception as e:
+                    logger.error(f"❌ H3 auto-selection (manual H2 path): error in answer_from_node: {e}")
+                    await cl.Message(f"เกิดข้อผิดพลาดในการประมวลผล: {e}").send()
+                    return
             else:
                 # Check for keyword-based auto-selection for specific questions
                 original_question = cl.user_session.get("original_user_question", "").lower()
@@ -1890,8 +1922,13 @@ async def handle_clarification_response(message: cl.Message, text: str):
 
     # ─── End hierarchical ───
 
-    if cl.user_session.get("clarification_just_exited"):
-        logger.warning("⛔ clarification_just_exited is True — skipping clarification logic")
+    clarification_flag = cl.user_session.get("clarification_just_exited")
+    last_answered = cl.user_session.get("last_answered_context")
+    logger.info(f"🔍 Post-hierarchical check: clarification_just_exited = {clarification_flag}, last_answered = {bool(last_answered)}")
+    
+    # Only skip if clarification_just_exited is True AND we have successfully answered
+    if clarification_flag and last_answered:
+        logger.warning("⛔ clarification_just_exited is True and we have answered context — skipping clarification logic")
         return
 
     nodes_to_consider = cl.user_session.get("nodes_to_consider", [])
@@ -2018,7 +2055,7 @@ async def is_broad_but_clear_question_llm(question: str) -> bool:
     prompt = (
         f'User asked: "{question}"\n\n'
         "Determine if this is a **broad, general policy-level** question that can be answered directly without needing further clarification.\n\n"
-        "✅ Answer 'Yes' if the question is asking for a **definition, general explanation, high-level process overview, or policy summary** (e.g., 'DOA คืออะไร', 'LOA ต่างจาก DOA อย่างไร', 'Process ในการสั่งซื้อ ต้องทำอย่างไรบ้าง', 'ขั้นตอนการทำสัญญาคืออะไร', รายชื่อผู้บริหาร, ผู้ที่ต้องติดต่อ).\n"
+        "✅ Answer 'Yes' if the question is asking for a **definition, general explanation, high-level process overview, policy summary, or general expense/entertainment rules** (e.g., 'DOA คืออะไร', 'LOA ต่างจาก DOA อย่างไร', 'Process ในการสั่งซื้อ ต้องทำอย่างไรบ้าง', 'ขั้นตอนการทำสัญญาคืออะไร', รายชื่อผู้บริหาร, ผู้ที่ต้องติดต่อ, 'พาคู่ค้าไปทานข้าว เบิกค่าใช้จ่ายได้มั้ย', 'ค่าเลี้ยงรับรองเบิกได้อย่างไร', 'entertainment expenses คืออะไร').\n"
         "❌ Answer 'No' if the question includes **specific numbers, exact amounts, particular conditions, detailed scenarios, specific approvals, payment methods, or user-specific logic**.\n\n"
         "Respond with only 'Yes' or 'No'."
     )
@@ -2037,6 +2074,28 @@ async def show_h1_options(message):
     h1_options = cl.user_session.get("h1_options") or []
     raw_h1 = cl.user_session.get("raw_h1") or {}
 
+    # 🎯 Auto-select if only 1 real choice (excluding exit option)
+    if len(h1_options) == 1:
+        selected_h1 = h1_options[0]
+        logger.info("🎯" * 20)
+        logger.info(f"🎯 AUTO-SELECTION LEVEL H1 (ONLY CHOICE)")
+        logger.info(f"🎯 Selected: '{selected_h1}'")
+        logger.info(f"🎯 Reason: Only 1 option available")
+        logger.info("🎯" * 20)
+        
+        # Simulate the user selecting this H1 option directly
+        # Set up the clarification state as if user chose option 1
+        cl.user_session.set("clarification_level", 0)
+        cl.user_session.set("awaiting_clarification", True)
+        cl.user_session.set("hier_sections", {h: raw_h1.get(h, []) for h in h1_options})
+        
+        # Create a fake user message selecting the first (and only) option
+        from chainlit.message import Message as clMessage
+        fake_selection_msg = clMessage(content="1")  # Select the first option
+        
+        # Process the selection through the clarification handler
+        return await on_message(fake_selection_msg)
+
     exit_label = "❌ ถามคำถามใหม่"
     opts = h1_options + [exit_label]
 
@@ -2045,7 +2104,10 @@ async def show_h1_options(message):
     cl.user_session.set("awaiting_clarification", True)
     cl.user_session.set("hier_sections", {h: raw_h1.get(h, []) for h in h1_options})
 
-    logger.info(f"📋 Final H1s shown to user: {h1_options}")
+    logger.info("🔍" * 20)
+    logger.info(f"🔍 SHOWING H1 CHOICES (NO AUTO-SELECTION)")
+    logger.info(f"🔍 Available H1 options: {h1_options}")
+    logger.info("🔍" * 20)
 
     lines = [f"{i+1}. {title}" for i, title in enumerate(opts)]
     text = "❓ โปรดเลือกหัวข้อหลัก (ระดับ 1):\n\n" + "\n".join(lines)
@@ -2406,7 +2468,18 @@ async def handle_broad_general_question(user_q: str):
                     best_h1_name = supplier_h1
                     best_h1_score = h1_similarity_scores.get(supplier_h1, 0.0)
             
-            if best_h1_score >= H1_AUTO_SELECT_THRESHOLD:
+            # Calculate score gap for gap-based auto-selection
+            H1_AUTO_SELECT_GAP = 0.08  # Minimum gap for auto-selection
+            sorted_h1_scores = sorted(h1_similarity_scores.items(), key=lambda x: x[1], reverse=True)
+            score_gap = 0.0
+            if len(sorted_h1_scores) >= 2:
+                score_gap = sorted_h1_scores[0][1] - sorted_h1_scores[1][1]
+                logger.info(f"🔍 H1 score gap: {sorted_h1_scores[0][0]} ({sorted_h1_scores[0][1]:.3f}) vs {sorted_h1_scores[1][0]} ({sorted_h1_scores[1][1]:.3f}) = {score_gap:.3f}")
+            
+            # Auto-select if either high score OR significant gap
+            should_auto_select = (best_h1_score >= H1_AUTO_SELECT_THRESHOLD) or (score_gap >= H1_AUTO_SELECT_GAP and best_h1_score >= 0.25)
+            
+            if should_auto_select:
                 logger.info(f"🎯 H1 auto-selected (high similarity): '{best_h1_name}' (score={best_h1_score:.3f} >= {H1_AUTO_SELECT_THRESHOLD})")
                 
                 await cl.Message(
@@ -2419,10 +2492,73 @@ async def handle_broad_general_question(user_q: str):
                 selected_h1_nodes = meaningful_h1_groups[best_h1_name]
                 cl.user_session.set("pre_drill_nodes", selected_h1_nodes)
                 
-                # Continue to H2 logic (similar to manual H1 selection)
-                from chainlit.message import Message as clMessage
-                fake_msg = clMessage(content=best_h1_name)
-                return await handle_standard_query(fake_msg)
+                # Continue directly to H2 processing to avoid recursive calls
+                h2_groups = defaultdict(list)
+                for node in selected_h1_nodes:
+                    path = node.node.metadata.get("section_path", [])
+                    if len(path) >= 2:
+                        h2_groups[path[1]].append(node)
+                
+                if len(h2_groups) == 1:
+                    # Auto-select single H2
+                    single_h2 = list(h2_groups.keys())[0]
+                    logger.info(f"🔄 Auto-selecting single H2: '{single_h2}'")
+                    selected_h2_nodes = h2_groups[single_h2]
+                    cl.user_session.set("selected_h2", single_h2)
+                    
+                    # Continue to H3 processing
+                    h3_groups = defaultdict(list)
+                    for n in selected_h2_nodes:
+                        path = n.node.metadata.get("section_path", [])
+                        if len(path) >= 3 and path[2] and path[1] == single_h2: 
+                            h3_groups[path[2]].append(n)
+
+                    if not h3_groups:
+                        clear_clarification_state()
+                        cl.user_session.set("awaiting_clarification", False)
+                        return await answer_from_node(selected_h2_nodes, user_q=user_q)
+
+                    if len(h3_groups) == 1:
+                        # Auto-select single H3
+                        single_h3 = list(h3_groups.keys())[0]
+                        logger.info(f"🔄 Auto-selecting single H3: '{single_h3}'")
+                        
+                        selected_h3_nodes = h3_groups[single_h3]
+                        cl.user_session.set("selected_h3", single_h3)
+                        cl.user_session.set("filtered_nodes", selected_h3_nodes)
+                        clear_clarification_state()
+                        cl.user_session.set("awaiting_clarification", False)
+                        cl.user_session.set("last_answered_context", selected_h3_nodes)
+                        
+                        try:
+                            cl.user_session.set("clarification_just_exited", False)
+                            logger.info("🎯 H3 auto-selection (H1 auto-select path): calling answer_from_node")
+                            await answer_from_node(selected_h3_nodes, user_q=user_q)
+                            logger.info("✅ H3 auto-selection (H1 auto-select path): answer_from_node completed successfully")
+                            return
+                        except Exception as e:
+                            logger.error(f"❌ H3 auto-selection (H1 auto-select path): error in answer_from_node: {e}")
+                            await cl.Message(f"เกิดข้อผิดพลาดในการประมวลผล: {e}").send()
+                            return
+                    else:
+                        # Multiple H3s - show choices
+                        cl.user_session.set("clarification_level", 2)
+                        cl.user_session.set("awaiting_clarification", True)
+                        cl.user_session.set("hier_sections", h3_groups)
+                        cl.user_session.set("filtered_nodes", selected_h2_nodes)
+                        return await show_h3_options(cl.Message(content=user_q))
+                elif len(h2_groups) > 1:
+                    # Multiple H2s - show choices
+                    cl.user_session.set("clarification_level", 1)
+                    cl.user_session.set("awaiting_clarification", True)
+                    cl.user_session.set("hier_sections", dict(h2_groups))
+                    cl.user_session.set("filtered_nodes", selected_h1_nodes)
+                    return await show_h2_options(cl.Message(content=user_q))
+                else:
+                    # No H2s - answer directly with H1 nodes
+                    clear_clarification_state()
+                    cl.user_session.set("awaiting_clarification", False)
+                    return await answer_from_node(selected_h1_nodes, user_q=user_q)
             
             logger.info(f"🔍 No auto-selection (best score {best_h1_score:.3f} < {H1_AUTO_SELECT_THRESHOLD}) - offering choices")
             
@@ -3450,7 +3586,7 @@ async def handle_standard_query(message: cl.Message):
         if best_h1:
             cl.user_session.set("selected_h1", best_h1)
     # 🔧 Simple logic: If high-scoring content exists under different parent levels, show choices
-    HIGH_SCORE_THRESHOLD = 0.4
+    HIGH_SCORE_THRESHOLD = 0.42  # Threshold to filter H1 choices (0.42 = show only top 2-3 most relevant options)
     
     # Group high-scoring nodes by H1 parent
     h1_high_score_groups = defaultdict(list)
@@ -3495,7 +3631,7 @@ async def handle_standard_query(message: cl.Message):
     logger.info("📊 H1 candidates by score: %s", ordered_h1)
 
     # H1 Auto-selection thresholds
-    H1_AUTO_SELECT_THRESHOLD = 0.60  # Minimum score for auto-selection
+    H1_AUTO_SELECT_THRESHOLD = 0.42  # Minimum score for auto-selection (aligned with HIGH_SCORE_THRESHOLD)
     H1_AUTO_SELECT_GAP = 0.08        # Minimum gap for auto-selection
     H1_FUZZY_MATCH_THRESHOLD = 0.85  # Minimum fuzzy match similarity for auto-selection
 
@@ -3554,8 +3690,8 @@ async def handle_standard_query(message: cl.Message):
         score_gap = top_score - second_score
         logger.info("🔍 H1 score gap = %.3f", score_gap)
 
-        # Force H1 choices if multiple sections have high-scoring content
-        if multiple_good_h1s:
+        # Force H1 choices if multiple sections have high-scoring content, UNLESS there's a very clear winner
+        if multiple_good_h1s and not (top_score >= 0.55 and score_gap >= 0.06):
             logger.info(f"🎯 Multiple H1 sections with high scores - forcing user choice")
             cl.user_session.set("drill_level", "h1")
             
@@ -3577,15 +3713,17 @@ async def handle_standard_query(message: cl.Message):
             
             return await show_h1_options(message)
         # Auto-select H1 if high confidence and clear winner AND no multiple good sections
-        elif top_score >= H1_AUTO_SELECT_THRESHOLD and score_gap >= H1_AUTO_SELECT_GAP:
-            logger.info(f"🎯 H1 auto-selected: '{top_h1}' (score={top_score:.3f}, gap={score_gap:.3f})")
+        # More aggressive auto-selection for very high scores
+        elif (top_score >= H1_AUTO_SELECT_THRESHOLD and score_gap >= H1_AUTO_SELECT_GAP) or (top_score >= 0.55 and score_gap >= 0.04):
+            auto_reason = "high score + gap" if top_score >= H1_AUTO_SELECT_THRESHOLD else "very high score + small gap"
+            logger.info(f"🎯 H1 auto-selected ({auto_reason}): '{top_h1}' (score={top_score:.3f}, gap={score_gap:.3f})")
             cl.user_session.set("selected_h1", top_h1)
             # Continue to H2 lcanogic below instead of showing H1 options
         elif score_gap < 0.08:  # not a big gap, means ambiguity
             cl.user_session.set("drill_level", "h1")
 
-            # Filter H1s with score > 0.5
-            filtered_h1s = [h1 for h1, score in ordered_h1 if score > 0.52]
+            # Filter H1s with score > 0.42 (aligned with HIGH_SCORE_THRESHOLD)
+            filtered_h1s = [h1 for h1, score in ordered_h1 if score > 0.42]
 
             # Fallback: if none match, force top 3
             if not filtered_h1s:
@@ -3795,31 +3933,34 @@ async def handle_standard_query(message: cl.Message):
     await answer_with_llm(nodes, final_q, lvl, top_score, fuzzy_score)
 
     # ─── 13) Reset for next new question ─────────────────────────────────
-    # ─── 13) Reset for next new question ─────────────────────────────────
-    clear_clarification_state()
+    # Only reset if we're NOT in the middle of a clarification flow
+    if not cl.user_session.get("awaiting_clarification"):
+        logger.info("🧹 Resetting session state after completing answer")
+        clear_clarification_state()
 
-    # 🧹 Clear all related session state
-    for key in [
-        "awaiting_clarification",
-        PRE_DRILL_KEY,
-        AWAITING_PRE_DRILL,
-        "pre_drill_nodes",
-        "pre_drill_query",
-        DOC_CHOICES_KEY,
-        "filtered_nodes",
-        "hier_sections",
-        "clarification_level",
-        "policy_auto_select",
-        "auto_skipped",
-        "current_doc",
-        "original_user_question",
-        "selected_bu",
-        "awaiting_bu_selection",
-    ]:
-        if key in ("awaiting_clarification", PRE_DRILL_KEY, AWAITING_PRE_DRILL, "awaiting_bu_selection"):
-            cl.user_session.set(key, False)
-        else:
-            cl.user_session.set(key, None)
+        # 🧹 Clear all related session state  
+        for key in [
+            PRE_DRILL_KEY,
+            AWAITING_PRE_DRILL,
+            "pre_drill_nodes",
+            "pre_drill_query",
+            DOC_CHOICES_KEY,
+            "filtered_nodes",
+            "hier_sections",
+            "clarification_level",
+            "policy_auto_select",
+            "auto_skipped",
+            "current_doc",
+            "original_user_question",
+            "selected_bu",
+            "awaiting_bu_selection",
+        ]:
+            if key in (PRE_DRILL_KEY, AWAITING_PRE_DRILL, "awaiting_bu_selection"):
+                cl.user_session.set(key, False)
+            else:
+                cl.user_session.set(key, None)
+    else:
+        logger.info("🔄 Preserving clarification state - awaiting user choice")
 
     # 💬 Inform the user in the chat window
 
