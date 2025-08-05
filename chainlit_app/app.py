@@ -129,32 +129,39 @@ BU_DOCUMENT_MAP = {
         "เงินลงทุนในโครงการ.docx",
         "อำนาจอนุมัติรายจ่ายทั่วไป.docx",
         "การเบิกค่าใช้จ่ายพนักงาน.docx",
-        "Policy FAQ.docx"
+        "FAQ_Narrative_1 DoA LOA_Proj App_Payment App.docx",
+        "FAQ_Narrative - Org Structure and General Question.docx"
     ],
     "คู่ค้าซื้อมาขายไป (Commercial / Trade Supplier)": [
         "การเพิ่มข้อมูลคู่ค้า และการจ่ายเงิน (Trade).docx",
-        "Policy FAQ.docx"
+        "FAQ_Narrative_2 Trade Supplier.docx",
+        "FAQ_Narrative - Org Structure and General Question.docx"
     ],
     "คู่ค้าอื่นๆ (Procurement / Non-Trade Supplier)": [
         "การเพิ่มและแก้ไขข้อมูลคู่ค้า (Non-trade).docx",
-        "Policy FAQ.docx"
+        "FAQ_Narrative_3 Non Trade Supplier.docx",
+        "FAQ_Narrative - Org Structure and General Question.docx"
+        
     ],
     "ลูกค้าผู้เช่าพื้นที่ (Mall / Tenant)": [
         "การเพิ่ม คัดเลือกลูกค้า การต่อสัญญา และการติดตามหนี้.docx",
-        "Policy FAQ.docx"
+        "FAQ_Narrative_4 Mall.docx",
+        "FAQ_Narrative - Org Structure and General Question.docx"
+        
     ],
     "ลูกค้า B2B": [
         "การบริหารสินเชื่อสำหรับธุรกิจ B2B.docx",
-        "Policy FAQ.docx",
+        "PFAQ_Narrative - Org Structure and General Question.docx",
         "B2B Others.docx"
     ],
     "ลูกหนี้อื่นๆ (AR Others / AR non-mall)": [
         "การเพิ่มและแก้ไขข้อมูลคู่ค้า (Non-trade).docx",
-        "Policy FAQ.docx"
+        "FAQ_Narrative - Org Structure and General Question.docx"
     ],
     "สินทรัพย์ (Asset)": [
         "FA-G-13 - Asset management policy.docx",
-        "Policy FAQ.docx"
+        "FAQ_Narrative - Org Structure and General Question.docx",
+        "FAQ_Narrative_7 Asset.docx"
     ]
 }
 

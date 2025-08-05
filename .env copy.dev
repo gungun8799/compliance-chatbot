@@ -55,11 +55,12 @@ DEV_AWS_ENDPOINT=http://localstack_compliance:4566           # inside docker
 LOCALSTACK_DATAPATH=localstack_compliance:/var/lib/localstack
 
 # LLM and Embedding model APIs
-LLM_BASE_URL=https://api-cpxis.lotuss.com/llm/v1
+LLM_BASE_URL=https://api.cpxis.global.lotuss.org/llm/v1
 LLM_MODEL_ID=default
-EMBED_BASE_URL=https://api-cpxis.lotuss.com/embedding/BAAI/bge-m3
+EMBED_BASE_URL=https://api.cpxis.global.lotuss.org/embedding/BAAI/bge-m3
 EMBED_MODEL_ID=BAAI/bge-m3
 API_KEY_CHATBOT=finance.lotuss.E9DD48B6C26A276CF48CDBC4D7468
+
 
 # LLM and Embedding model APIs_PRIVATE
 #LLM_BASE_URL_PRI=https://api.cpxis.global.lotuss.org/llm/v1
@@ -72,7 +73,7 @@ EMBED_MODEL_ID_PRI=BAAI/bge-m3
 API_KEY_CHATBOT_PRI=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
 
 # Embedding Service Configuration
-EMBEDDING_SERVICE="text_embeddings_inference" # Options: "cohere", "text_embeddings_inference"
+EMBEDDING_SERVICE="cohere" # Options: "cohere", "text_embeddings_inference"
 
 # MS Teams Workflow
 MS_TEAMS_WORKFLOW_URL=https://prod-61.southeastasia.logic.azure.com:443/workflows/20c31567788946949f37d287ed9b84bb/triggers/manual/paths/invoke?api-version=2016-06-01&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=BQbyjk8DBqjPdiU5PReJ7G7OD1je9zyTGFRJ7pCtRnU
