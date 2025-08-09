@@ -258,7 +258,7 @@ CHAT_PROFILES = {
         "llm_settings": {
             "model": "default",
             "api_base": "https://api-cpxis.lotuss.com/llm/v1",
-            "api_key": "finance.lotuss.E9DD48B6C26A276CF48CDBC4D7468",
+            "api_key": API_KEY_CHATBOT,
             "is_chat_model": True,
             "is_function_calling_model": False,
             "temperature": 0.2,
