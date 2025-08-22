@@ -4,7 +4,8 @@
       "Bash(python:*)",
       "Bash(mv:*)",
       "Bash(timeout:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(git add:*)"
     ],
     "deny": [],
     "ask": []
