@@ -90,7 +90,7 @@ COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME")
 REDIS_CHATSTORE_URI = os.getenv("REDIS_CHATSTORE_URI")
 REDIS_CHATSTORE_PASSWORD = os.getenv("REDIS_CHATSTORE_PASSWORD")
-TOKEN_LIMIT = 512 # Default token limit for chat memory
+TOKEN_LIMIT = 4096 # Increased token limit for better memory retention
 TRACE_ENDPOINT = os.getenv("TRACE_ENDPOINT")
 TRACE_PROJECT_NAME = os.getenv("TRACE_PROJECT_NAME")
 MS_TEAMS_WORKFLOW_URL = os.getenv("MS_TEAMS_WORKFLOW_URL")
@@ -201,10 +201,63 @@ clarification_state = Table(
     Column("nodes", JSON, nullable=False),
 )
 
-# Chat Store
-chat_store = RedisChatStore(
-    redis_url=REDIS_CHATSTORE_URI, db=0, password=REDIS_CHATSTORE_PASSWORD, ttl=180
-)
+# File-based memory storage as fallback
+import tempfile
+import pickle
+from pathlib import Path
+
+MEMORY_DIR = Path(tempfile.gettempdir()) / "chainlit_memory"
+MEMORY_DIR.mkdir(exist_ok=True)
+
+def save_memory_to_file(memory_key: str, messages: list):
+    """Save chat messages to file"""
+    try:
+        memory_file = MEMORY_DIR / f"{memory_key}.pkl"
+        with open(memory_file, 'wb') as f:
+            pickle.dump(messages, f)
+        logger.info(f"💾 Saved {len(messages)} messages to file: {memory_file}")
+    except Exception as e:
+        logger.error(f"❌ Failed to save memory to file: {e}")
+
+def load_memory_from_file(memory_key: str) -> list:
+    """Load chat messages from file"""
+    try:
+        memory_file = MEMORY_DIR / f"{memory_key}.pkl"
+        if memory_file.exists():
+            with open(memory_file, 'rb') as f:
+                messages = pickle.load(f)
+            logger.info(f"📂 Loaded {len(messages)} messages from file: {memory_file}")
+            return messages
+        else:
+            logger.info(f"📂 No memory file found: {memory_file}")
+            return []
+    except Exception as e:
+        logger.error(f"❌ Failed to load memory from file: {e}")
+        return []
+
+# Chat Store - Test Redis connectivity with file fallback
+try:
+    logger.info(f"🔌 Testing Redis connection to: {REDIS_CHATSTORE_URI}")
+    chat_store = RedisChatStore(
+        redis_url=REDIS_CHATSTORE_URI, db=0, password=REDIS_CHATSTORE_PASSWORD, ttl=180
+    )
+    # Test the connection
+    test_key = "test_connection"
+    redis_client.set(test_key, "test_value", ex=5)  # 5 second expiry
+    test_result = redis_client.get(test_key)
+    if test_result:
+        logger.info("✅ Redis connection successful!")
+        redis_client.delete(test_key)
+        use_file_fallback = False
+    else:
+        logger.warning("⚠️ Redis test failed - using file-based memory")
+        chat_store = None
+        use_file_fallback = True
+except Exception as e:
+    logger.error(f"❌ Redis connection failed: {e}")
+    logger.info("🔄 Chat memory will use file-based fallback")
+    chat_store = None
+    use_file_fallback = True
 
 # Qdrant Manager
 qdrant_manager = QdrantManager()
@@ -429,15 +482,26 @@ async def handle_policy_question(text: str, selected_bu: str):
         memory = cl.user_session.get("memory")
         conversation_history = ""
         if memory:
-            messages = memory.get()[-8:]  # Last 8 messages for more context
-            # Format conversation history more clearly
-            formatted_messages = []
-            for msg in messages:
-                role = "User" if msg.role == "user" else "Assistant"
-                content = msg.content[:200] + "..." if len(msg.content) > 200 else msg.content
-                formatted_messages.append(f"{role}: {content}")
-            conversation_history = "\n".join(formatted_messages)
-            logger.info(f"🧠 Conversation history being passed to LLM: {conversation_history}")
+            try:
+                messages = memory.get()
+                logger.info(f"🧠 Total messages in memory: {len(messages)}")
+                if messages:
+                    # Get last 8 messages for context
+                    recent_messages = messages[-8:] 
+                    # Format conversation history more clearly
+                    formatted_messages = []
+                    for i, msg in enumerate(recent_messages):
+                        role = "User" if msg.role == "user" else "Assistant"
+                        content = msg.content[:200] + "..." if len(msg.content) > 200 else msg.content
+                        formatted_messages.append(f"{role}: {content}")
+                        logger.info(f"🧠 Message {i+1}: {role}: {msg.content[:50]}...")
+                    conversation_history = "\n".join(formatted_messages)
+                    logger.info(f"🧠 Conversation history being passed to LLM ({len(formatted_messages)} messages)")
+                else:
+                    logger.info("🧠 Memory exists but no messages stored yet")
+            except Exception as e:
+                logger.error(f"🧠 Error retrieving memory: {e}")
+                conversation_history = ""
         else:
             logger.info("🧠 No memory found - empty conversation history")
         
@@ -486,9 +550,17 @@ async def handle_policy_question(text: str, selected_bu: str):
         # Add assistant response to memory
         memory = cl.user_session.get("memory")
         if memory:
-            memory.put(ChatMessage(role="assistant", content=answer))
-            logger.info("✅ Added assistant response to memory")
-        
+            try:
+                memory.put(ChatMessage(role="assistant", content=answer))
+                # Verify the message was stored
+                messages_after = memory.get()
+                logger.info(f"✅ Added assistant response to memory. Total messages now: {len(messages_after)}")
+                if messages_after:
+                    logger.info(f"🧠 Latest message: {messages_after[-1].role}: {messages_after[-1].content[:100]}...")
+            except Exception as e:
+                logger.error(f"❌ Failed to add assistant response to memory: {e}")
+        else:
+            logger.error("❌ No memory found when trying to save assistant response")
         # Log the conversation
         thread_id = cl.context.session.thread_id
         save_conversation_log(thread_id, response_msg.id, role="assistant", content=answer)
@@ -699,12 +771,37 @@ INSTRUCTIONS:
 
 2. STYLE: Natural conversation like a helpful colleague, NOT formal documentation.
 
-3. RESPONSE STRATEGY: 
-   - For GENERAL/BROAD questions (e.g., "Procurement ดูอะไรบ้าง"), give a HIGH-LEVEL summary first, then ask if they want details
-   - For SPECIFIC questions with clear context, provide detailed answers
-   - Pay attention to conversation history for follow-up questions
-   - If user provides clarification (e.g., "สร้างสโตร์ใหม่ครับ"), connect it to previous context
-   - Don't overwhelm with details unless specifically requested
+3. RESPONSE STRATEGY & INTELLIGENT CLARIFICATION: 
+   
+   **STEP 1: ANALYZE THE RETRIEVED DOCUMENTS**
+   Before responding, carefully examine the retrieved documents to identify:
+   - Multiple possible scenarios/categories mentioned
+   - Different approval levels or amount ranges
+   - Various document types or procedures
+   - Multiple stakeholders or departments involved
+   - Conditional requirements (if X then Y)
+   
+   **STEP 2: DETERMINE RESPONSE TYPE**
+   - GENERAL/BROAD questions (e.g., "Procurement ดูอะไรบ้าง") = Give HIGH-LEVEL summary + ask for specifics
+   - AMBIGUOUS questions where documents show MULTIPLE OPTIONS = Ask clarification questions
+   - SPECIFIC questions with clear context = Provide detailed answers
+   - Follow-up questions = Connect to conversation history
+   
+   **STEP 3: INTELLIGENT CLARIFICATION DETECTION**
+   ASK CLARIFICATION when you find in the documents:
+   - Multiple approval authorities for different amount ranges
+   - Different procedures for different types of projects/suppliers/customers
+   - Conditional requirements that depend on specific criteria
+   - Multiple document requirements for different scenarios
+   
+   **CLARIFICATION EXAMPLES:**
+   ❌ Don't give generic answers when documents show multiple options
+   ✅ Ask: "เนื่องจากมีขั้นตอนที่แตกต่างกันตามประเภท ช่วยบอกหน่อยได้ไหมครับว่า..."
+   
+   **WHEN TO ASK VS WHEN TO ANSWER:**
+   - If documents mention "depends on", "varies by", "different types" → ASK FOR CLARIFICATION
+   - If user provides specific amount, type, or scenario → GIVE DETAILED ANSWER
+   - If documents show clear single procedure → GIVE DIRECT ANSWER
 
 4. CRITICAL FORMATTING REQUIREMENTS: 
    - MANDATORY: Each bullet point MUST be on a separate line with line break
@@ -728,29 +825,54 @@ INSTRUCTIONS:
    - Add blank lines between paragraphs
    - NO "### headers", NO "1.2.3." numbered lists
 
-5. EXAMPLES:
+5. INTELLIGENT CLARIFICATION EXAMPLES:
 
-GOOD - High-level response for broad question:
-"ครับ แผนก Procurement จะดูเรื่องหลักๆ คือ:
-
-**เอกสารและข้อมูลบริษัทคู่ค้า** - เพื่อตรวจสอบความน่าเชื่อถือ
-**ความเหมาะสมของราคาและคุณภาพ** - เพื่อความคุ้มค่า
-**การปฏิบัติตามกฎหมายและนโยบาย** - เพื่อความปลอดภัย
-
-อยากทราบรายละเอียดเฉพาะด้านไหนเป็นพิเศษไหมครับ? เช่น เอกสารที่ต้องใช้ หรือขั้นตอนการตรวจสอบ?"
-
-GOOD - Asks for clarification (Thai response):
+**SCENARIO 1: User asks "โครงการ 300 ล้านใครอนุมัติ"**
+IF documents show different authorities for different project types:
+✅ GOOD - Ask for clarification:
 "ครับ ยินดีช่วยเรื่องโครงการ 300 ล้านบาทครับ!
 
-เนื่องจากประเภทโครงการที่แตกต่างกันจะมีผู้อนุมัติต่างกัน ช่วยบอกหน่อยได้ไหมครับว่าเป็นโครงการประเภทไหน?
+เนื่องจากผู้อนุมัติจะแตกต่างกันตามประเภทโครงการ ช่วยบอกหน่อยได้ไหมครับว่าเป็นโครงการประเภทไหน?
 
-**ตัวอย่างเช่น:**
+**จากข้อมูลที่พบ มีประเภทหลักๆ เช่น:**
 
 • โครงการสร้างสโตร์ใหม่
-• โครงการเทคโนโลยี  
-• การเปลี่ยนอุปกรณ์
+• โครงการเทคโนโลยี/IT  
+• โครงการปรับปรุงอุปกรณ์
+• โครงการการตลาด
 
 เมื่อทราบประเภทแล้ว จะบอกผู้อนุมัติที่ถูกต้องให้เลยครับ"
+
+**SCENARIO 2: User asks "เพิ่มคู่ค้าใหม่ต้องทำยังไง"**
+IF documents show different processes for Trade vs Non-Trade:
+✅ GOOD - Ask for clarification:
+"ครับ ยินดีช่วยเรื่องการเพิ่มคู่ค้าใหม่ครับ!
+
+ขั้นตอนจะแตกต่างกันตามประเภทคู่ค้า ช่วยบอกหน่อยได้ไหมครับว่าเป็นคู่ค้าประเภทไหน?
+
+**ประเภทคู่ค้าที่มี:**
+
+• Trade Supplier (คู่ค้าซื้อมาขายไป)
+• Non-Trade Supplier (คู่ค้าบริการ/อุปกรณ์)
+• Overseas Supplier (คู่ค้าต่างประเทศ)
+
+เอกสารและขั้นตอนจะแตกต่างกันนะครับ"
+
+**SCENARIO 3: User asks "อนุมัติค่าใช้จ่าย 50,000 บาท"**
+IF documents show different authorities for different expense types:
+✅ GOOD - Ask for clarification:
+"ครับ สำหรับการอนุมัติ 50,000 บาท
+
+ผู้อนุมัติจะขึ้นอยู่กับประเภทค่าใช้จ่าย ช่วยบอกหน่อยได้ไหมครับว่าเป็น:
+
+**ประเภทค่าใช้จ่าย:**
+
+• ค่าใช้จ่ายทั่วไป (General Expense)
+• Purchase Requisition (การสั่งซื้อ)
+• ค่าใช้จ่ายพนักงาน (Employee Expense)
+• ค่าลงทุนโครงการ (Project Investment)
+
+แต่ละประเภทมีผู้อนุมัติต่างกันนะครับ"
 
 GOOD - Direct answer when clear:
 "**สำหรับโครงการ IT มูลค่า 300 ล้านบาท** ต้องได้รับอนุมัติจาก IT&DC Committee ครับ
@@ -770,23 +892,58 @@ GOOD - Follow-up response (connects to previous context):
 
 มีอะไรเพิ่มเติมที่อยากทราบไหมครับ?"
 
-CRITICAL FORMATTING & PROCESSING:
+CRITICAL DOCUMENT ANALYSIS & PROCESSING:
+
+**BEFORE RESPONDING - ANALYZE DOCUMENTS FOR:**
+1. **Multiple Categories/Types**: Look for phrases like "แบ่งเป็น", "ประเภท", "กรณี", "depends on", "varies"
+2. **Amount Ranges**: Different procedures for different monetary values
+3. **Conditional Logic**: "ถ้า...แล้ว", "หาก", "เมื่อ", "กรณีที่"
+4. **Different Stakeholders**: Multiple departments, committees, approval levels
+5. **Geographic/Location Differences**: Domestic vs International, different regions
+
+**DECISION TREE:**
+- IF documents show ONE clear answer → Provide direct answer
+- IF documents show MULTIPLE procedures/authorities → ASK CLARIFICATION with specific options from documents
+- IF user question is vague AND documents have multiple scenarios → ASK CLARIFICATION
+- IF user provides specifics that match document conditions → Give targeted answer
+
+**FORMATTING REQUIREMENTS:**
 - ALWAYS preserve line breaks when listing items or bullet points
-- Each bullet point must be on its own line
+- Each bullet point must be on its own line  
 - Use blank lines to separate sections for readability
-- STEP 1: Find all numerical ranges and approval authorities in the provided documents
-- STEP 2: Convert user's amount (e.g., "300 ล้าน" = 300,000,000) to match document format
-- STEP 3: Determine which range the amount falls into
-- STEP 4: Extract the exact approval authority for that range
-- STEP 5: Provide the answer with reasoning based on the document evidence
+- Use **bold text** for categories and emphasis
+- When asking clarification, always list the actual options found in documents
+
+**PROCESSING STEPS:**
+- STEP 1: Scan all documents for categories, conditions, and variations
+- STEP 2: Check if user question maps to specific scenario or is ambiguous
+- STEP 3: If ambiguous + multiple options exist → ask clarification with document-based options
+- STEP 4: If specific → find exact match and provide detailed answer
+- STEP 5: Always explain reasoning based on document evidence
 - NEVER guess or assume - only use information explicitly stated in the documents
 
 For follow-up questions, always connect to previous conversation context. For new ambiguous questions, ask for clarification first.
 
-CRITICAL: 
-- BROAD questions (e.g., "Procurement ดูอะไรบ้าง", "อนุมัติอะไรบ้าง") = Give high-level summary + ask for specifics
-- SPECIFIC questions (e.g., "โครงการ 300 ล้านให้ใครอนุมัติ") = Give detailed answer
-- When listing multiple items, put each item on a separate line
+CRITICAL INTELLIGENCE REQUIREMENTS: 
+
+**MANDATORY CLARIFICATION TRIGGERS:**
+- User asks about "โครงการ" but doesn't specify type → ASK what type of project
+- User asks about "คู่ค้า" but doesn't specify Trade/Non-Trade → ASK which type
+- User asks about "อนุมัติ" with amount but no expense type → ASK expense category  
+- User asks about "เอกสาร" but scenario unclear → ASK for specific situation
+- Documents show different processes for different criteria → ALWAYS ASK FOR CLARIFICATION
+
+**RESPONSE PATTERNS:**
+- BROAD questions ("ดูอะไรบ้าง", "อนุมัติอะไรบ้าง") = High-level summary + ask for specifics
+- AMBIGUOUS questions with multiple document scenarios = Ask clarification with document-based options
+- SPECIFIC questions with clear context = Detailed answer with document evidence
+- Always explain WHY you're asking for clarification (because different types have different requirements)
+
+**INTELLIGENT BEHAVIOR:**
+- Read documents FIRST to identify variations before responding
+- If you find multiple procedures/authorities → Don't guess, ASK for clarification
+- Base clarification options on ACTUAL categories found in retrieved documents
+- Connect follow-ups to conversation history for context
 
 YOUR RESPONSE:"""
 
@@ -1695,18 +1852,45 @@ async def on_message(message: cl.Message):
     save_conversation_log(thread_id, message.id, role="user", content=text)
 
     # ✅ Ensure memory exists and is reused
-    thread_id = cl.user_session.get("thread_id")
+    thread_id = cl.user_session.get("thread_id") or cl.context.session.thread_id
     user_id = cl.user_session.get("user").identifier
     redis_key = f"{user_id}:{thread_id}"
+    logger.info(f"🆔 Thread ID: {thread_id}, User ID: {user_id}, Redis key: {redis_key}")
 
     memory = cl.user_session.get("memory")
     if memory is None:
-        memory = ChatMemoryBuffer.from_defaults(
-            token_limit=TOKEN_LIMIT,
-            chat_store=chat_store,
-            chat_store_key=redis_key
-        )
-        cl.user_session.set("memory", memory)
+        logger.info(f"🧠 Creating new memory with redis_key: {redis_key}")
+        try:
+            if chat_store is not None:
+                memory = ChatMemoryBuffer.from_defaults(
+                    token_limit=TOKEN_LIMIT,
+                    chat_store=chat_store,
+                    chat_store_key=redis_key
+                )
+                logger.info(f"✅ Memory created with Redis backing")
+            else:
+                # Use file-based memory fallback
+                logger.info("🔄 Using file-based memory fallback")
+                memory = ChatMemoryBuffer.from_defaults(token_limit=TOKEN_LIMIT)
+                
+                # Load existing messages from file if they exist
+                if hasattr(globals(), 'use_file_fallback') and use_file_fallback:
+                    existing_messages = load_memory_from_file(redis_key)
+                    for msg in existing_messages:
+                        memory.put(msg)
+                    logger.info(f"📂 Loaded {len(existing_messages)} existing messages")
+                
+            cl.user_session.set("memory", memory)
+            cl.user_session.set("memory_key", redis_key)  # Store key for file operations
+            logger.info(f"✅ Memory initialized successfully")
+        except Exception as e:
+            logger.error(f"❌ Failed to create memory: {e}")
+            # Fallback to in-memory only
+            memory = ChatMemoryBuffer.from_defaults(token_limit=TOKEN_LIMIT)
+            cl.user_session.set("memory", memory)
+            logger.info("🔄 Using fallback in-memory buffer")
+    else:
+        logger.info(f"♻️ Using existing memory from session")
 
     # 💡 Always reassign to Settings.memory to ensure LLM sees the latest buffer
     Settings.memory = memory
@@ -1746,13 +1930,17 @@ async def on_message(message: cl.Message):
         return
 
     # Add user message to memory
-    memory.put(ChatMessage(role="user", content=text))
-    logger.info(f"✅ Added user message to memory: {text}")
-    
-    # Debug: show current memory state
-    logger.info("🧠 Current memory contents:")
-    for i, msg in enumerate(memory.get()):
-        logger.info(f"  [{i}] {msg.role}: {msg.content[:100]}...")
+    try:
+        memory.put(ChatMessage(role="user", content=text))
+        logger.info(f"✅ Added user message to memory: {text[:100]}")
+        
+        # Debug: show current memory state
+        messages = memory.get()
+        logger.info(f"🧠 Current memory contents ({len(messages)} total messages):")
+        for i, msg in enumerate(messages):
+            logger.info(f"  [{i}] {msg.role}: {msg.content[:100]}...")
+    except Exception as e:
+        logger.error(f"❌ Failed to add user message to memory: {e}")
 
     # Handle the natural policy question
     await handle_policy_question(text, selected_bu)

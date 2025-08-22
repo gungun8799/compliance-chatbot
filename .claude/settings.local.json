@@ -8,7 +8,9 @@
       "Bash(git add:*)",
       "Bash(git push:*)",
       "Bash(git checkout:*)",
-      "Bash(git stash:*)"
+      "Bash(git stash:*)",
+      "Bash(git commit:*)",
+      "Bash(redis-cli:*)"
     ],
     "deny": [],
     "ask": []
