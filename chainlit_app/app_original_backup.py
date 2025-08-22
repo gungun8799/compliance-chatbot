@@ -273,61 +273,25 @@ async def send_animated_message(
     interval: float = 0.8
 ) -> None:
     """Displays an animated message optimized for performance."""
-    logger.info(f"🎬 ANIMATION FUNCTION CALLED with msg='{base_msg}', frames={frames}")
-    
     msg = cl.Message(content=base_msg, author="Customer Service Agent")
     await msg.send()
-    logger.info(f"🎬 ANIMATION MESSAGE SENT: {msg.id}")
 
     progress = 0
     bar_length = 12
 
     try:
-        iteration = 0
         while True:
-            iteration += 1
             current_frame = frames[progress % len(frames)]
             progress_bar = ("▣" * (progress % bar_length)).ljust(bar_length, "▢")
             # Update the content property, then issue a plain update()
-            new_content = f"{current_frame} {base_msg}\n{progress_bar}"
-            logger.info(f"🎬 ANIMATION UPDATE {iteration}: '{new_content[:50]}...'")
-            msg.content = new_content
+            msg.content = f"{current_frame} {base_msg}\n{progress_bar}"
             await msg.update()
             progress += 1
             await asyncio.sleep(interval)
     except asyncio.CancelledError:
-        logger.info(f"🎬 ANIMATION CANCELLED after {iteration} iterations")
         # Final static display when the task is cancelled
         msg.content = base_msg
         await msg.update()
-
-async def stream_text_response(message: cl.Message, text: str, delay: float = 0.05, mode: str = "word"):
-    """Stream text to a message with typing effect."""
-    import asyncio
-    
-    # Start with empty content
-    message.content = ""
-    await message.update()
-    
-    if mode == "word":
-        # Stream word by word while preserving line breaks
-        import re
-        # Split by spaces but preserve line breaks
-        parts = re.split(r'(\s+)', text)  # This keeps the separators (spaces/newlines)
-        current_text = ""
-        for i, part in enumerate(parts):
-            current_text += part
-            message.content = current_text
-            await message.update()
-            if i < len(parts) - 1 and part.strip():  # Don't delay on whitespace or last part
-                await asyncio.sleep(delay)
-    else:
-        # Stream character by character (for shorter text)
-        for i in range(len(text) + 1):
-            message.content = text[:i]
-            await message.update()
-            if i < len(text):  # Don't delay after the last character
-                await asyncio.sleep(delay)
 
 async def ask_business_unit():
     logger.info("🟡 Triggering BU selection prompt")
@@ -343,454 +307,7 @@ async def ask_business_unit():
     options = "\n".join(f"{i+1}. {bu}" for i, bu in enumerate(business_units))
     cl.user_session.set("awaiting_bu_selection", True)
     cl.user_session.set("business_units", business_units)
-    # Display BU selection prompt without animation
-    full_prompt = "กรุณาเลือกหัวข้อคำถามโดยพิมพ์ตัวเลขเพื่อเลือกหัวข้อ:\n\n" + options
-    bu_message = cl.Message(content=full_prompt)
-    await bu_message.send()
-
-async def handle_bu_selection(text: str):
-    """Handle business unit selection from user input."""
-    business_units = cl.user_session.get("business_units", [])
-    
-    try:
-        selection = int(text) - 1
-        if 0 <= selection < len(business_units):
-            selected_bu = business_units[selection]
-            cl.user_session.set("selected_bu", selected_bu)
-            cl.user_session.set("awaiting_bu_selection", False)
-            
-            logger.info(f"✅ Selected BU: {selected_bu}")
-            
-            # Welcome message after BU selection
-            welcome_msg = f"""✅ เลือก **{selected_bu}** เรียบร้อยแล้ว
-
-ตอนนี้คุณสามารถถามคำถามเกี่ยวกับนโยบายและระเบียบปฏิบัติได้เลย ผมจะช่วยตอบและหากต้องการข้อมูลเพิ่มเติมเพื่อให้คำตอบที่ตรงประเด็น ผมจะถามกลับครับ
-
-กรุณาพิมพ์คำถามของคุณ 👇"""
-            
-            # Display welcome message without animation
-            welcome_message = cl.Message(content=welcome_msg)
-            await welcome_message.send()
-        else:
-            error_msg = cl.Message(content="❌ กรุณาเลือกหมายเลข 1-7 เท่านั้น")
-            await error_msg.send()
-            await ask_business_unit()
-            
-    except ValueError:
-        error_msg = cl.Message(content="")
-        await error_msg.send()
-        await stream_text_response(error_msg, "❌ กรุณาเลือกหมายเลข 1-7 เท่านั้น")
-        await ask_business_unit()
-
-async def handle_policy_question(text: str, selected_bu: str):
-    """Handle policy questions with natural conversation flow."""
-    logger.info(f"🔍 Processing policy question: {text} for BU: {selected_bu}")
-    
-    try:
-        # Start animated message as a background task (using the working approach)
-        import contextlib
-        logger.info("🎬 Starting document retrieval animation...")
-        animation_task = asyncio.create_task(
-            send_animated_message(
-                base_msg="กำลังเช็ค Policy ให้อยู่ รอสักครู่นะคะ …",
-                frames=["🔍", "🔎", "📄", "📋", "📊"],
-                interval=0.8  # Slower interval to see the animation
-            )
-        )
-        
-        try:
-            # Get top 10 relevant nodes from selected BU documents  
-            import time
-            start_time = time.time()
-            logger.info("⏰ Starting document retrieval...")
-            
-            # Add minimum delay to ensure animation shows
-            await asyncio.sleep(2.0)  # Minimum 2 seconds to see animation
-            
-            nodes = await retrieve_bu_filtered_nodes(text, selected_bu, top_k=10)
-            end_time = time.time()
-            logger.info(f"⏰ Document retrieval took {end_time - start_time:.2f} seconds")
-        finally:
-            # Stop animation using the working pattern
-            logger.info("🛑 Stopping document retrieval animation...")
-            animation_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await animation_task
-        
-        if not nodes:
-            # Create new message for no results
-            no_results_msg = cl.Message(content="", author="Customer Service Agent")
-            await no_results_msg.send()
-            no_info_msg = f"ขออภัย ไม่พบข้อมูลที่เกี่ยวข้องกับคำถาม '{text}' ในหมวด {selected_bu} กรุณาลองถามในรูปแบบอื่นหรือติดต่อทีมนโยบายโดยตรง"
-            await stream_text_response(no_results_msg, no_info_msg)
-            return
-            
-        # Get chat memory for conversation history  
-        memory = cl.user_session.get("memory")
-        conversation_history = ""
-        if memory:
-            messages = memory.get()[-8:]  # Last 8 messages for more context
-            # Format conversation history more clearly
-            formatted_messages = []
-            for msg in messages:
-                role = "User" if msg.role == "user" else "Assistant"
-                content = msg.content[:200] + "..." if len(msg.content) > 200 else msg.content
-                formatted_messages.append(f"{role}: {content}")
-            conversation_history = "\n".join(formatted_messages)
-            logger.info(f"🧠 Conversation history being passed to LLM: {conversation_history}")
-        else:
-            logger.info("🧠 No memory found - empty conversation history")
-        
-        # Create the natural policy expert prompt with nodes and question
-        policy_prompt = create_new_policy_prompt(text, nodes, conversation_history, selected_bu)
-        logger.info(f"🤖 Full prompt being sent to LLM: {policy_prompt[:500]}...")  # First 500 chars
-        
-        # Start animated message for LLM processing
-        logger.info("🎬 Starting LLM processing animation...")
-        llm_animation_task = asyncio.create_task(
-            send_animated_message(
-                base_msg="กำลังประมวลผลและเตรียมคำตอบ...",
-                frames=["🤖", "💭", "✨", "⚡", "🧠"],
-                interval=0.8  # Slower interval to see the animation
-            )
-        )
-        
-        try:
-            # Get LLM response
-            start_llm_time = time.time()
-            logger.info("⏰ Starting LLM processing...")
-            
-            # Add minimum delay to ensure animation shows 
-            await asyncio.sleep(2.0)  # Minimum 2 seconds to see animation
-            
-            llm = get_llm_settings("Accounting Compliance")
-            response = llm.chat([ChatMessage(role="user", content=policy_prompt)])
-            answer = response.message.content.strip()
-            
-            end_llm_time = time.time()
-            logger.info(f"⏰ LLM processing took {end_llm_time - start_llm_time:.2f} seconds")
-        finally:
-            # Stop LLM animation
-            logger.info("🛑 Stopping LLM processing animation...")
-            llm_animation_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await llm_animation_task
-        
-        # Create new message for streaming the response
-        response_msg = cl.Message(content="", author="Customer Service Agent")
-        await response_msg.send()
-        
-        # Stream the answer with typing effect
-        await stream_text_response(response_msg, answer)
-        
-        # Add assistant response to memory
-        memory = cl.user_session.get("memory")
-        if memory:
-            memory.put(ChatMessage(role="assistant", content=answer))
-            logger.info("✅ Added assistant response to memory")
-        
-        # Log the conversation
-        thread_id = cl.context.session.thread_id
-        save_conversation_log(thread_id, response_msg.id, role="assistant", content=answer)
-        
-        logger.info(f"✅ Successfully answered policy question")
-        
-    except Exception as e:
-        logger.error(f"❌ Error handling policy question: {e}")
-        error_msg = "ขออภัย เกิดข้อผิดพลาดในการประมวลผลคำถาม กรุณาลองใหม่อีกครั้ง"
-        # Cancel any running animations
-        if 'animation_task' in locals():
-            animation_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await animation_task
-        if 'llm_animation_task' in locals():
-            llm_animation_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await llm_animation_task
-        
-        if 'response_msg' in locals():
-            response_msg.content = error_msg
-            await response_msg.update()
-        else:
-            await cl.Message(content=error_msg).send()
-
-async def retrieve_bu_filtered_nodes(query: str, selected_bu: str, top_k: int = 5):
-    """Retrieve top nodes filtered by business unit documents."""
-    try:
-        # Get allowed documents for the selected BU
-        allowed_docs = BU_DOCUMENT_MAP.get(selected_bu, [])
-        if not allowed_docs:
-            logger.warning(f"No documents found for BU: {selected_bu}")
-            return []
-            
-        logger.info(f"📁 Allowed documents for '{selected_bu}': {allowed_docs}")
-        
-        # Get vector store and create index
-        dataset = DATASET_MAPPING.get("Accounting Compliance", QDRANT_COLLECTION_NAME)
-        vector_store = qdrant_manager.get_vector_store(dataset, hybrid=True)
-        index = VectorStoreIndex.from_vector_store(vector_store)
-        
-        # Create retriever and get nodes
-        retriever = index.as_retriever(similarity_top_k=top_k * 3)  # Get more to filter
-        nodes = retriever.retrieve(query)
-        
-        # Filter nodes by BU documents
-        filtered_nodes = [n for n in nodes if n.node.metadata.get("source") in allowed_docs]
-        
-        # Take top k after filtering
-        filtered_nodes = filtered_nodes[:top_k]
-        
-        logger.info(f"🔍 Retrieved {len(filtered_nodes)} filtered nodes for query: {query}")
-        
-        # Log the retrieved nodes
-        for i, node in enumerate(filtered_nodes):
-            source = node.node.metadata.get("source", "unknown")
-            score = getattr(node, 'score', 0.0)
-            logger.info(f"  Node {i+1}: {source} (score: {score:.3f})")
-        
-        return filtered_nodes
-        
-    except Exception as e:
-        logger.error(f"❌ Error retrieving nodes: {e}")
-        return []
-
-def create_context_from_nodes(nodes):
-    """Create formatted context from retrieved nodes."""
-    if not nodes:
-        return "ไม่พบข้อมูลที่เกี่ยวข้อง"
-    
-    context_parts = []
-    for i, node in enumerate(nodes, 1):
-        source = node.node.metadata.get("source", "unknown")
-        section_path = node.node.metadata.get("section_path", [])
-        section_str = " > ".join(section_path) if section_path else "ไม่ระบุหัวข้อ"
-        
-        context_parts.append(f"""--- เอกสารที่ {i} ---
-แหล่งข้อมูล: {source}
-หัวข้อ: {section_str}
-เนื้อหา: {node.node.text}""")
-    
-    return "\n\n".join(context_parts)
-
-def create_policy_expert_prompt(user_question: str, context: str, conversation_history: str, selected_bu: str):
-    """Create a natural policy expert prompt for the LLM."""
-    
-    prompt = f"""คุณคือผู้ช่วยด้านนโยบายบริษัทที่เป็นมิตร สำหรับหมวด "{selected_bu}"
-
-🎯 **สำคัญมาก: ตอบแบบสนทนาธรรมชาติเหมือนคนจริงๆ ไม่ใช่เอกสารหรือคู่มือ**
-
-วิธีการตอบของคุณ:
-• พูดแบบเพื่อนร่วมงานที่เป็นกันเอง ไม่เป็นทางการ
-• อธิบายแบบง่ายๆ ไม่ต้องมีโครงสร้างซับซ้อน  
-• เมื่อไม่แน่ใจ ถามกลับแบบเป็นมิตร
-
-💬 ประวัติการสนทนา:
-{conversation_history}
-
-❓ คำถาม: {user_question}
-
-📋 ข้อมูลจากเอกสารนโยบาย:
-{context}
-
-💡 ตัวอย่างการตอบที่ดี:
-"ครับ โครงการ 300 ล้านบาทนี้ต้องให้ CP Axtra ExCom เป็นผู้อนุมัติครับ เพราะเป็นโครงการขนาดใหญ่"
-"เรื่องนี้มีหลายกรณีเลย ช่วยบอกเพิ่มเติมหน่อยได้ไหมครับว่าโครงการประเภทไหน?"
-"ขออภัยครับ ไม่เห็นข้อมูลนี้ในเอกสาร ลองติดต่อทีมนโยบายโดยตรงดูครับ"
-
-🚫 **ห้ามใช้รูปแบบเหล่านี้เด็ดขาด:**
-- ห้าม: "### 📌 รายละเอียด", "### 💡 ขั้นตอน", "### ❓ ถ้ายัง"  
-- ห้าม: "1. 2. 3." หรือ "- ช่วงงบประมาณ:" แบบทางการ
-- ห้าม: การแสดงรายการแบบเทคนิคหรือดัมพ์ข้อมูลดิบ
-
-✅ **ใช้แบบนี้แทน:**
-ตัวอย่างการตอบที่ถูกต้อง:
-"ครับ โครงการ 300 ล้านบาทนี้ต้องให้ CP Axtra ExCom เป็นผู้อนุมัติครับ
-
-เหตุผลก็คือเพราะโครงการมูลค่าในช่วงนี้ถือว่าเป็นโครงการขนาดใหญ่ จึงต้องให้คณะกรรมการระดับสูงเป็นผู้ตัดสินใจครับ
-
-แต่ถ้าอยากให้คำตอบที่แม่นยำกว่านี้ ช่วยบอกหน่อยได้ไหมครับว่าโครงการนี้เป็นประเภทไหน เช่น สร้างสโตร์ใหม่ หรือโครงการเทคโนโลยี?"
-
-**ตอบแบบสนทนาธรรมชาติเหมือนคนจริงๆ ไม่ใช่แบบเอกสารหรือคู่มือ**
-
-**CRITICAL: Write your response as if you're having a friendly conversation with a colleague. NO bullet points, NO numbered lists, NO markdown headers (###). Just natural Thai conversation.**
-
-กรุณาตอบ:"""
-
-    return prompt
-
-def create_policy_expert_prompt_with_nodes(user_question: str, nodes: list, conversation_history: str, selected_bu: str):
-    """Create prompt that sends nodes directly to LLM for better processing."""
-    
-    # Format nodes for LLM
-    nodes_data = ""
-    for i, node in enumerate(nodes, 1):
-        source = node.node.metadata.get("source", "unknown")
-        section_path = node.node.metadata.get("section_path", [])
-        section_str = " > ".join(section_path) if section_path else "ไม่ระบุหัวข้อ"
-        score = getattr(node, 'score', 0.0)
-        
-        nodes_data += f"""
-เอกสารที่ {i}:
-ไฟล์: {source}
-หัวข้อ: {section_str}
-ความเกี่ยวข้อง: {score:.3f}
-เนื้อหา: {node.node.text}
-
----"""
-
-    prompt = f"""คุณเป็นผู้ช่วยด้านนโยบาย "{selected_bu}" ที่เป็นมิตรและเชี่ยวชาญ
-
-🎯 ภารกิจ: ตอบคำถามแบบสนทนาธรรมชาติ ไม่ใช่แบบเอกสาร
-
-ประวัติการสนทนา: {conversation_history}
-
-คำถามของผู้ใช้: {user_question}
-
-ข้อมูลจากเอกสาร: {nodes_data}
-
-🚨 สำคัญมาก - รูปแบบการตอบ:
-• ตอบแบบเพื่อนคุยกันเป็นกันเอง
-• ไม่ใช้ "### หัวข้อ" หรือ bullet points ซับซ้อน  
-• ถ้าข้อมูลไม่ชัดเจนหรือมีหลายกรณี → ถามกลับแบบเป็นมิتร
-• ถ้ามีข้อมูลชัดเจน → ตอบตรงประเด็นแล้วถามว่าต้องการทราบอะไรเพิ่ม
-
-ตัวอย่างการตอบที่ดี:
-"ครับ โครงการ 300 ล้านนี้ต้องให้ CP Axtra ExCom อนุมัติครับ เพราะอยู่ในช่วงโครงการขนาดใหญ่ 
-
-แต่จริงๆ แล้วขึ้นอยู่กับว่าเป็นโครงการประเภทไหนด้วย เช่น ถ้าเป็นโครงการสร้างสโตร์หรือโครงการเทคโนโลยี กฎอาจแตกต่างกันหน่อย
-
-ช่วยบอกได้ไหมครับว่าโครงการนี้เป็นแบบไหน?"
-
-กรุณาตอบ:"""
-
-    return prompt
-
-def create_new_policy_prompt(user_question: str, nodes: list, conversation_history: str, selected_bu: str):
-    """Create the definitive prompt for natural policy responses."""
-    
-    # Format nodes for LLM
-    nodes_data = ""
-    for i, node in enumerate(nodes, 1):
-        source = node.node.metadata.get("source", "unknown")
-        section_path = node.node.metadata.get("section_path", [])
-        section_str = " > ".join(section_path) if section_path else "No section"
-        score = getattr(node, 'score', 0.0)
-        
-        nodes_data += f"""
-Document {i}:
-Source: {source}
-Section: {section_str}
-Relevance: {score:.3f}
-Content: {node.node.text}
-
----"""
-
-    prompt = f"""You are a friendly company policy assistant for "{selected_bu}".
-
-CONVERSATION HISTORY: {conversation_history}
-
-USER QUESTION: {user_question}
-
-RETRIEVED DOCUMENTS: {nodes_data}
-
-INSTRUCTIONS:
-
-1. LANGUAGE: Respond in the same language as the user's question. Thai question = Thai response.
-
-2. STYLE: Natural conversation like a helpful colleague, NOT formal documentation.
-
-3. RESPONSE STRATEGY: 
-   - For GENERAL/BROAD questions (e.g., "Procurement ดูอะไรบ้าง"), give a HIGH-LEVEL summary first, then ask if they want details
-   - For SPECIFIC questions with clear context, provide detailed answers
-   - Pay attention to conversation history for follow-up questions
-   - If user provides clarification (e.g., "สร้างสโตร์ใหม่ครับ"), connect it to previous context
-   - Don't overwhelm with details unless specifically requested
-
-4. CRITICAL FORMATTING REQUIREMENTS: 
-   - MANDATORY: Each bullet point MUST be on a separate line with line break
-   - MANDATORY: Use double line breaks (\n\n) between sections
-   
-   BULLET POINT FORMAT - FOLLOW EXACTLY:
-   ✅ CORRECT FORMAT:
-   "เอกสารที่ต้องตรวจสอบ:
-   
-   • สัญญา (Contract) - เพื่อยืนยันเงื่อนไขการทำงาน
-   • Confidentiality Agreement (NDA) - เพื่อความปลอดภัย
-   • D&B Report - รายงานเครดิต
-   
-   ข้อมูลเพิ่มเติม:"
-   
-   ❌ ABSOLUTELY FORBIDDEN:
-   "• Item 1 • Item 2 • Item 3" (all on one line)
-   
-   - For tables, use proper markdown table format with line breaks
-   - Use **bold text** for headings and emphasis  
-   - Add blank lines between paragraphs
-   - NO "### headers", NO "1.2.3." numbered lists
-
-5. EXAMPLES:
-
-GOOD - High-level response for broad question:
-"ครับ แผนก Procurement จะดูเรื่องหลักๆ คือ:
-
-**เอกสารและข้อมูลบริษัทคู่ค้า** - เพื่อตรวจสอบความน่าเชื่อถือ
-**ความเหมาะสมของราคาและคุณภาพ** - เพื่อความคุ้มค่า
-**การปฏิบัติตามกฎหมายและนโยบาย** - เพื่อความปลอดภัย
-
-อยากทราบรายละเอียดเฉพาะด้านไหนเป็นพิเศษไหมครับ? เช่น เอกสารที่ต้องใช้ หรือขั้นตอนการตรวจสอบ?"
-
-GOOD - Asks for clarification (Thai response):
-"ครับ ยินดีช่วยเรื่องโครงการ 300 ล้านบาทครับ!
-
-เนื่องจากประเภทโครงการที่แตกต่างกันจะมีผู้อนุมัติต่างกัน ช่วยบอกหน่อยได้ไหมครับว่าเป็นโครงการประเภทไหน?
-
-**ตัวอย่างเช่น:**
-
-• โครงการสร้างสโตร์ใหม่
-• โครงการเทคโนโลยี  
-• การเปลี่ยนอุปกรณ์
-
-เมื่อทราบประเภทแล้ว จะบอกผู้อนุมัติที่ถูกต้องให้เลยครับ"
-
-GOOD - Direct answer when clear:
-"**สำหรับโครงการ IT มูลค่า 300 ล้านบาท** ต้องได้รับอนุมัติจาก IT&DC Committee ครับ
-
-ใช้เวลาประมาณ 1-2 สัปดาห์ ขึ้นอยู่กับความครบถ้วนของเอกสาร
-
-มีอะไรเพิ่มเติมเกี่ยวกับกระบวนการที่อยากทราบไหมครับ?"
-
-GOOD - Follow-up response (connects to previous context):
-"เข้าใจแล้วครับ! **สำหรับโครงการสร้างสโตร์ใหม่ มูลค่า 300 ล้านบาท** 
-
-[Read the documents to find the exact approval authority for this amount and project type]
-
-[Explain the reasoning based on the policy ranges found in the documents]
-
-[Provide any additional relevant process information from the documents]
-
-มีอะไรเพิ่มเติมที่อยากทราบไหมครับ?"
-
-CRITICAL FORMATTING & PROCESSING:
-- ALWAYS preserve line breaks when listing items or bullet points
-- Each bullet point must be on its own line
-- Use blank lines to separate sections for readability
-- STEP 1: Find all numerical ranges and approval authorities in the provided documents
-- STEP 2: Convert user's amount (e.g., "300 ล้าน" = 300,000,000) to match document format
-- STEP 3: Determine which range the amount falls into
-- STEP 4: Extract the exact approval authority for that range
-- STEP 5: Provide the answer with reasoning based on the document evidence
-- NEVER guess or assume - only use information explicitly stated in the documents
-
-For follow-up questions, always connect to previous conversation context. For new ambiguous questions, ask for clarification first.
-
-CRITICAL: 
-- BROAD questions (e.g., "Procurement ดูอะไรบ้าง", "อนุมัติอะไรบ้าง") = Give high-level summary + ask for specifics
-- SPECIFIC questions (e.g., "โครงการ 300 ล้านให้ใครอนุมัติ") = Give detailed answer
-- When listing multiple items, put each item on a separate line
-
-YOUR RESPONSE:"""
-
-    return prompt
+    await cl.Message(content="กรุณาเลือกหัวข้อคำถามโดยพิมพ์ตัวเลขเพื่อเลือกหัวข้อ:\n\n" + options).send()
         
 # ✅ Add this for on-demand manual retrieval testin
 def manual_retrieve(query: str, top_k=5):
@@ -1687,7 +1204,7 @@ async def on_chat_start():
 
 @cl.on_message
 async def on_message(message: cl.Message):
-    """Handles incoming user messages with natural conversation flow."""
+    """Handles incoming user messages."""
     text = message.content.strip()
     thread_id = cl.context.session.thread_id
 
@@ -1711,54 +1228,65 @@ async def on_message(message: cl.Message):
     # 💡 Always reassign to Settings.memory to ensure LLM sees the latest buffer
     Settings.memory = memory
 
-    # Check if awaiting business unit selection
+
+    # ✅ Reset memory if flagged by previous assistant turn
+    # ✅ Optional memory reset — only if explicitly triggered (e.g. user typed 0 earlier)
+    if cl.user_session.get("reset_memory_next_turn"):
+        cl.user_session.set("reset_memory_next_turn", False)
+        
+        logger.info("⚠️ Skipped memory reset — using existing memory for continuity.")
+        # Do NOT reinitialize memory here
+    else:
+        logger.info("✅ Reusing memory for thread %s", thread_id)
+    awaiting_clarification = cl.user_session.get("awaiting_clarification", False)
+
+    if awaiting_clarification:
+        if text not in ("0", "❌ ถามคำถามใหม่") and not text.isdigit():
+            memory.put(ChatMessage(role="user", content=text))
+            logger.info(f"✅ Appended clarification input to memory: {text}")
+        else:
+            logger.info(f"⚠️ Skipped clarification input: {text}")
+    else:
+        if text not in ("0", "❌ ถามคำถามใหม่"):
+            memory.put(ChatMessage(role="user", content=text))
+            logger.info(f"✅ Appended normal input to memory: {text}")
+
+        
+
+            # ✅ Log updated memory state only after appending
+            logger.info("🧠 Memory after appending new user message:")
+            for i, msg in enumerate(memory.get()):
+                logger.info(f"[{i}] {msg.role.upper()}: {msg.content}")
+
+    
+    if cl.user_session.get("selected_bu") is None and not cl.user_session.get("awaiting_bu_selection"):
+        logger.info("💡 First user message with no BU selected → ask for BU")
+        await ask_business_unit()
+        return
+    # Handle BU selection if awaiting
     if cl.user_session.get("awaiting_bu_selection", False):
-        await handle_bu_selection(text)
-        return
+        logger.info("🔁 Handling user BU input: %s", text)
+        bu_list = cl.user_session.get("business_units") or []
+        try:
+            index = int(text) - 1
+            if 0 <= index < len(bu_list):
+                selected_bu = bu_list[index]
+                cl.user_session.set("selected_bu", selected_bu)
+                cl.user_session.set("awaiting_bu_selection", False)
+                logger.info("✅ BU selected: %s", selected_bu)
+                await cl.Message(content=f"✅ เลือก BU: {selected_bu} แล้ว กรุณาพิมพ์คำถามของคุณ").send()
+                return  # <-- keep return only here after successful BU selection
+            else:
+                logger.warning("⚠️ Invalid BU index")
+                await cl.Message(content="⚠️ โปรดเลือกหมายเลขที่ถูกต้อง").send()
+                return
+        except ValueError:
+            logger.warning("⚠️ Non-numeric BU input")
+            await cl.Message(content="⚠️ โปรดระบุหมายเลขของ BU ที่ต้องการ").send()
+            return
 
-    # Check if business unit is selected
-    selected_bu = cl.user_session.get("selected_bu")
-    if not selected_bu:
-        await ask_business_unit()
-        return
 
-    # Check if user wants to start a new question/topic (return to BU selection)
-    new_question_keywords = [
-        "ถามใหม่", "คำถามใหม่", "เปลี่ยนหัวข้อ", "เปลี่ยนหัวข้อใหม่", "เริ่มใหม่", 
-        "เลือกหัวข้อใหม่", "หัวข้อใหม่", "เริ่มต้นใหม่", "เปลี่ยนหมวด", "หมวดใหม่",
-        "new question", "new topic", "change topic", "start over", "restart"
-    ]
-    
-    if any(keyword in text.lower() for keyword in new_question_keywords):
-        logger.info(f"🔄 User requested new question/topic: {text}")
-        # Reset BU selection
-        cl.user_session.set("selected_bu", None)
-        cl.user_session.set("awaiting_bu_selection", False)
-        
-        # Clear memory for fresh start
-        memory.reset()
-        cl.user_session.set("memory", memory)
-        
-        # Show confirmation and trigger BU selection
-        reset_msg = cl.Message(content="✅ เริ่มคำถามใหม่ กรุณาเลือกหัวข้อใหม่")
-        await reset_msg.send()
-        await ask_business_unit()
-        return
-
-    # Add user message to memory
-    memory.put(ChatMessage(role="user", content=text))
-    logger.info(f"✅ Added user message to memory: {text}")
-    
-    # Debug: show current memory state
-    logger.info("🧠 Current memory contents:")
-    for i, msg in enumerate(memory.get()):
-        logger.info(f"  [{i}] {msg.role}: {msg.content[:100]}...")
-
-    # Handle the natural policy question
-    await handle_policy_question(text, selected_bu)
-    return  # Exit after natural flow - don't continue to old complex logic
-
-    # ─── Global "start new conversation" shortcut ───
+    # ─── Global “start new conversation” shortcut ───
     # ─── Global “start new conversation” shortcut ───
     if text == "0" or text == "❌ ถามคำถามใหม่":
         clear_clarification_state()
