@@ -303,6 +303,7 @@ CHAT_PROFILES = {
             "is_chat_model": True,
             "is_function_calling_model": False,
             "temperature": 0.7,
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
         },
     },
     "Accounting Compliance": {
@@ -316,6 +317,7 @@ CHAT_PROFILES = {
             "is_function_calling_model": False,
             "temperature": 0.2,
             "http_client": httpx.Client(verify=False),
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
         },
     },
 }
@@ -757,7 +759,7 @@ Content: {node.node.text}
 
 ---"""
 
-    prompt = f"""You are a friendly company policy assistant for "{selected_bu}".
+    prompt = f"""You are a friendly company policy assistant for "{selected_bu}". 😊
 
 CONVERSATION HISTORY: {conversation_history}
 
@@ -769,7 +771,7 @@ INSTRUCTIONS:
 
 1. LANGUAGE: Respond in the same language as the user's question. Thai question = Thai response.
 
-2. STYLE: Natural conversation like a helpful colleague, NOT formal documentation.
+2. STYLE: Natural, friendly conversation like a helpful colleague. Use appropriate emojis to make responses more engaging! 😊
 
 3. RESPONSE STRATEGY & INTELLIGENT CLARIFICATION: 
    
@@ -830,9 +832,9 @@ INSTRUCTIONS:
 **SCENARIO 1: User asks "โครงการ 300 ล้านใครอนุมัติ"**
 IF documents show different authorities for different project types:
 ✅ GOOD - Ask for clarification:
-"ครับ ยินดีช่วยเรื่องโครงการ 300 ล้านบาทครับ!
+"ครับ ยินดีช่วยเรื่องโครงการ 300 ล้านบาทครับ! 😊
 
-เนื่องจากผู้อนุมัติจะแตกต่างกันตามประเภทโครงการ ช่วยบอกหน่อยได้ไหมครับว่าเป็นโครงการประเภทไหน?
+เนื่องจากผู้อนุมัติจะแตกต่างกันตามประเภทโครงการ ช่วยบอกหน่อยได้ไหมครับว่าเป็นโครงการประเภทไหน? 🤔
 
 **จากข้อมูลที่พบ มีประเภทหลักๆ เช่น:**
 
@@ -846,43 +848,43 @@ IF documents show different authorities for different project types:
 **SCENARIO 2: User asks "เพิ่มคู่ค้าใหม่ต้องทำยังไง"**
 IF documents show different processes for Trade vs Non-Trade:
 ✅ GOOD - Ask for clarification:
-"ครับ ยินดีช่วยเรื่องการเพิ่มคู่ค้าใหม่ครับ!
+"ครับ ยินดีช่วยเรื่องการเพิ่มคู่ค้าใหม่ครับ! 😊
 
-ขั้นตอนจะแตกต่างกันตามประเภทคู่ค้า ช่วยบอกหน่อยได้ไหมครับว่าเป็นคู่ค้าประเภทไหน?
+ขั้นตอนจะแตกต่างกันตามประเภทคู่ค้า ช่วยบอกหน่อยได้ไหมครับว่าเป็นคู่ค้าประเภทไหน? 🤔
 
 **ประเภทคู่ค้าที่มี:**
 
-• Trade Supplier (คู่ค้าซื้อมาขายไป)
-• Non-Trade Supplier (คู่ค้าบริการ/อุปกรณ์)
-• Overseas Supplier (คู่ค้าต่างประเทศ)
+• Trade Supplier (คู่ค้าซื้อมาขายไป) 📦
+• Non-Trade Supplier (คู่ค้าบริการ/อุปกรณ์) 🔧
+• Overseas Supplier (คู่ค้าต่างประเทศ) 🌏
 
-เอกสารและขั้นตอนจะแตกต่างกันนะครับ"
+เอกสารและขั้นตอนจะแตกต่างกันนะครับ 📋"
 
 **SCENARIO 3: User asks "อนุมัติค่าใช้จ่าย 50,000 บาท"**
 IF documents show different authorities for different expense types:
 ✅ GOOD - Ask for clarification:
-"ครับ สำหรับการอนุมัติ 50,000 บาท
+"ครับ สำหรับการอนุมัติ 50,000 บาท 💰
 
-ผู้อนุมัติจะขึ้นอยู่กับประเภทค่าใช้จ่าย ช่วยบอกหน่อยได้ไหมครับว่าเป็น:
+ผู้อนุมัติจะขึ้นอยู่กับประเภทค่าใช้จ่าย ช่วยบอกหน่อยได้ไหมครับว่าเป็น: 🤔
 
 **ประเภทค่าใช้จ่าย:**
 
-• ค่าใช้จ่ายทั่วไป (General Expense)
-• Purchase Requisition (การสั่งซื้อ)
-• ค่าใช้จ่ายพนักงาน (Employee Expense)
-• ค่าลงทุนโครงการ (Project Investment)
+• ค่าใช้จ่ายทั่วไป (General Expense) 📝
+• Purchase Requisition (การสั่งซื้อ) 🛒
+• ค่าใช้จ่ายพนักงาน (Employee Expense) 👤
+• ค่าลงทุนโครงการ (Project Investment) 🏗️
 
-แต่ละประเภทมีผู้อนุมัติต่างกันนะครับ"
+แต่ละประเภทมีผู้อนุมัติต่างกันนะครับ ✅"
 
 GOOD - Direct answer when clear:
-"**สำหรับโครงการ IT มูลค่า 300 ล้านบาท** ต้องได้รับอนุมัติจาก IT&DC Committee ครับ
+"**สำหรับโครงการ IT มูลค่า 300 ล้านบาท** ต้องได้รับอนุมัติจาก IT&DC Committee ครับ 💻
 
-ใช้เวลาประมาณ 1-2 สัปดาห์ ขึ้นอยู่กับความครบถ้วนของเอกสาร
+ใช้เวลาประมาณ 1-2 สัปดาห์ ขึ้นอยู่กับความครบถ้วนของเอกสาร ⏱️
 
-มีอะไรเพิ่มเติมเกี่ยวกับกระบวนการที่อยากทราบไหมครับ?"
+มีอะไรเพิ่มเติมเกี่ยวกับกระบวนการที่อยากทราบไหมครับ? 😊"
 
 GOOD - Follow-up response (connects to previous context):
-"เข้าใจแล้วครับ! **สำหรับโครงการสร้างสโตร์ใหม่ มูลค่า 300 ล้านบาท** 
+"เข้าใจแล้วครับ! 👍 **สำหรับโครงการสร้างสโตร์ใหม่ มูลค่า 300 ล้านบาท** 🏪 
 
 [Read the documents to find the exact approval authority for this amount and project type]
 
@@ -891,6 +893,13 @@ GOOD - Follow-up response (connects to previous context):
 [Provide any additional relevant process information from the documents]
 
 มีอะไรเพิ่มเติมที่อยากทราบไหมครับ?"
+
+6. CONVERSATION MEMORY & CONTEXT:
+   - ALWAYS refer back to previous conversation when answering follow-up questions
+   - If user refers to "it", "that", "this", "นั้น", "นี้", "อันนี้" - connect to the previous topic
+   - Maintain context throughout the conversation
+   - Example: If user previously asked about "ซื้อเครื่องพิมพ์" and now asks "เอกสารประกอบมีอะไรบ้าง", you MUST understand they're asking about documents for buying a printer
+   - Check conversation history to understand the full context before responding
 
 CRITICAL DOCUMENT ANALYSIS & PROCESSING:
 
@@ -2939,6 +2948,25 @@ async def provide_broad_summary(top_k_nodes, user_q: str):
     )
     
     try:
+        # Get conversation history
+        memory = cl.user_session.get("memory")
+        conversation_history = ""
+        if memory:
+            try:
+                messages = memory.get()
+                logger.info(f"🧠 Total messages in memory for summary: {len(messages)}")
+                if messages and len(messages) > 0:
+                    formatted_messages = []
+                    for msg in messages[-8:]:  # Get last 8 messages for context
+                        if msg.role == "user":
+                            formatted_messages.append(f"ผู้ใช้: {msg.content}")
+                        elif msg.role == "assistant":
+                            formatted_messages.append(f"ผู้ช่วย: {msg.content}")
+                    conversation_history = "\n".join(formatted_messages)
+                    logger.info(f"🧠 Including {len(formatted_messages)} messages in summary context")
+            except Exception as e:
+                logger.error(f"🧠 Error retrieving memory for summary: {e}")
+        
         # Combine the top nodes content and log document sources
         combined_content = ""
         doc_sources = {}
@@ -2959,19 +2987,34 @@ async def provide_broad_summary(top_k_nodes, user_q: str):
         for doc, count in doc_sources.items():
             logger.info(f"📊   {doc}: {count} nodes")
         
-        # Create a summary prompt
+        # Create a summary prompt with conversation history
         llm = get_llm_settings(cl.user_session.get("chat_profile"))
-        summary_prompt = (
-            f'คำถาม: "{user_q}"\n\n'
-            f'เอกสาร:\n{combined_content}\n\n'
-            'โปรดให้สรุปภาพรวมที่กระชับและชัดเจนเกี่ยวกับหัวข้อนี้ โดย:\n'
-            '- ใช้ภาษาง่าย ๆ ที่เข้าใจได้\n'
-            '- ความยาวไม่เกิน 3-4 ประโยค\n'
-            '- เน้นแนวคิดหลักและจุดสำคัญเท่านั้น\n'
-            '- ไม่ต้องให้รายละเอียดขั้นตอนหรือเอกสารทั้งหมด\n'
-            '- หากมีหลายประเภทหรือกรณี ให้กล่าวถึงแบบสรุป\n\n'
-            'ตอบเป็นภาษาไทย:'
-        )
+        
+        # Build prompt with conversation context if available
+        if conversation_history:
+            summary_prompt = (
+                f'ประวัติการสนทนา:\n{conversation_history}\n\n'
+                f'คำถามปัจจุบัน: "{user_q}"\n\n'
+                f'เอกสารที่เกี่ยวข้อง:\n{combined_content}\n\n'
+                '🎯 คำแนะนำ:\n'
+                '- ตอบคำถามโดยพิจารณาบริบทจากประวัติการสนทนา\n'
+                '- ใช้ภาษาที่เป็นมิตรและเข้าใจง่าย พร้อมอิโมจิเพื่อความน่าสนใจ 😊\n'
+                '- หากเป็นคำถามต่อเนื่อง ให้อ้างอิงถึงสิ่งที่คุยกันมาก่อนหน้า\n'
+                '- ตอบกระชับ ชัดเจน และตรงประเด็น\n'
+                '- ใช้ภาษาไทยหรือภาษาเดียวกับที่ผู้ใช้ถาม\n\n'
+                'คำตอบ:'
+            )
+        else:
+            summary_prompt = (
+                f'คำถาม: "{user_q}"\n\n'
+                f'เอกสาร:\n{combined_content}\n\n'
+                '🎯 โปรดตอบคำถามโดย:\n'
+                '- ใช้ภาษาที่เป็นมิตรและเข้าใจง่าย พร้อมอิโมจิที่เหมาะสม 😊\n'
+                '- ตอบกระชับและชัดเจน ไม่เกิน 3-4 ประโยค\n'
+                '- เน้นประเด็นหลักที่สำคัญ\n'
+                '- ใช้ภาษาไทยหรือภาษาเดียวกับที่ผู้ใช้ถาม\n\n'
+                'คำตอบ:'
+            )
         
         # Let animation run for a bit before making LLM call
         await asyncio.sleep(1.0)
@@ -2986,6 +3029,14 @@ async def provide_broad_summary(top_k_nodes, user_q: str):
         
         # Send the summary with typewriting effect
         await send_with_feedback(summary_text)
+        
+        # Add assistant response to memory
+        if memory:
+            try:
+                memory.put(ChatMessage(role="assistant", content=summary_text))
+                logger.info(f"✅ Added summary response to memory")
+            except Exception as e:
+                logger.error(f"❌ Failed to add summary to memory: {e}")
         
         logger.info(f"📝 Provided broad summary for: {user_q}")
         
@@ -3025,9 +3076,9 @@ async def handle_broad_general_question(user_q: str):
     retriever = index.as_retriever(similarity_top_k=40)  # Increased to capture distant sections like Non-trade and Trade suppliers
     nodes = retriever.retrieve(user_q)
     
-    # Include more nodes for comprehensive summary - use nodes with score >= 0.40 or top 12, whichever is smaller
+    # Include more nodes for comprehensive summary - use nodes with score >= 0.40 or top 20, whichever is smaller
     high_score_nodes = [n for n in nodes if hasattr(n, 'score') and n.score >= 0.40] if nodes else []
-    top_k_for_answer = high_score_nodes[:12] if len(high_score_nodes) <= 12 else nodes[:12]
+    top_k_for_answer = high_score_nodes[:20] if len(high_score_nodes) <= 20 else nodes[:20]
     top_score = top_k_for_answer[0].score if top_k_for_answer and hasattr(top_k_for_answer[0], "score") else 0.0
     logger.info(f"🔍 Using {len(top_k_for_answer)} nodes for summary (top score = {top_score:.3f})")
 
