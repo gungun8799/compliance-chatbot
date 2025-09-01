@@ -10,7 +10,20 @@
       "Bash(git checkout:*)",
       "Bash(git stash:*)",
       "Bash(git commit:*)",
-      "Bash(redis-cli:*)"
+      "Bash(redis-cli:*)",
+      "Bash(docker compose:*)",
+      "Bash(docker system prune:*)",
+      "Bash(docker volume prune:*)",
+      "Bash(docker:*)",
+      "Bash(rm:*)",
+      "Bash(grep:*)",
+      "Bash(mkdir:*)",
+      "WebSearch",
+      "WebFetch(domain:docs.chainlit.io)",
+      "WebFetch(domain:github.com)",
+      "Bash(cp:*)",
+      "Bash(chainlit run:*)",
+      "Bash(ls:*)"
     ],
     "deny": [],
     "ask": []

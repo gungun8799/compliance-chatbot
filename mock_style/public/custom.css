@@ -1,0 +1,37 @@
+/* Hide watermark */
+.watermark {
+  display: none !important;
+}
+
+/* Add CP AXTRA logo to header */
+#header::before {
+  content: "";
+  background-image: url("/public/CP_Axtra_Logo_2.png");
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: left center;
+  width: 120px;
+  height: 40px;
+  display: inline-block;
+  margin-right: 15px;
+}
+
+/* Remove grayscale filter from login background */
+@media (prefers-color-scheme: dark) {
+  .login-bg,
+  .absolute.inset-0.h-full.w-full.object-cover,
+  img[class*="object-cover"] {
+    filter: none !important;
+    -webkit-filter: none !important;
+  }
+}
+
+/* Also target light theme */
+@media (prefers-color-scheme: light) {
+  .login-bg,
+  .absolute.inset-0.h-full.w-full.object-cover,
+  img[class*="object-cover"] {
+    filter: none !important;
+    -webkit-filter: none !important;
+  }
+}

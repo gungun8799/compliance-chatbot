@@ -1,8 +1,4 @@
 {
-    "logo": {
-        "light": "/public/cp_axtra_logo.svg",
-        "dark": "/public/cp_axtra_logo.svg"
-    },
     "custom_fonts": [],
     "variables": {
         "light": {

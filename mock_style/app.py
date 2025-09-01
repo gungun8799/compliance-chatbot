@@ -130,45 +130,38 @@ BU_DOCUMENT_MAP = {
         "อำนาจอนุมัติรายจ่ายทั่วไป.docx",
         "การเบิกค่าใช้จ่ายพนักงาน.docx",
         "FAQ_Narrative_1 DoA LOA_Proj App_Payment App.docx",
-        "FAQ_Narrative - Org Structure and General Question.docx",
-        "management chatbot.docx"
+        "FAQ_Narrative - Org Structure and General Question.docx"
     ],
     "คู่ค้าซื้อมาขายไป (Commercial / Trade Supplier)": [
         "การเพิ่มข้อมูลคู่ค้า และการจ่ายเงิน (Trade).docx",
         "FAQ_Narrative_2 Trade Supplier.docx",
-        "FAQ_Narrative - Org Structure and General Question.docx",
-        "management chatbot.docx"
+        "FAQ_Narrative - Org Structure and General Question.docx"
     ],
     "คู่ค้าอื่นๆ (Procurement / Non-Trade Supplier)": [
         "การเพิ่มและแก้ไขข้อมูลคู่ค้า (Non-trade).docx",
         "FAQ_Narrative_3 Non Trade Supplier.docx",
-        "FAQ_Narrative - Org Structure and General Question.docx",
-        "management chatbot.docx"
+        "FAQ_Narrative - Org Structure and General Question.docx"
         
     ],
     "ลูกค้าผู้เช่าพื้นที่ (Mall / Tenant)": [
         "การเพิ่ม คัดเลือกลูกค้า การต่อสัญญา และการติดตามหนี้.docx",
         "FAQ_Narrative_4 Mall.docx",
-        "FAQ_Narrative - Org Structure and General Question.docx",
-        "management chatbot.docx"
+        "FAQ_Narrative - Org Structure and General Question.docx"
         
     ],
     "ลูกค้า B2B": [
         "การบริหารสินเชื่อสำหรับธุรกิจ B2B.docx",
         "PFAQ_Narrative - Org Structure and General Question.docx",
-        "B2B Others.docx",
-        "management chatbot.docx"
+        "B2B Others.docx"
     ],
     "ลูกหนี้อื่นๆ (AR Others / AR non-mall)": [
         "การเพิ่มและแก้ไขข้อมูลคู่ค้า (Non-trade).docx",
-        "FAQ_Narrative - Org Structure and General Question.docx",
-        "management chatbot.docx"
+        "FAQ_Narrative - Org Structure and General Question.docx"
     ],
     "สินทรัพย์ (Asset)": [
         "FA-G-13 - Asset management policy.docx",
         "FAQ_Narrative - Org Structure and General Question.docx",
-        "FAQ_Narrative_7 Asset.docx",
-        "management chatbot.docx"
+        "FAQ_Narrative_7 Asset.docx"
     ]
 }
 
@@ -1779,7 +1772,7 @@ async def chat_profile(current_user: cl.User):
         cl.ChatProfile(
             name="Accounting Compliance",
             markdown_description="Got questions about the policy? I'm all ears and ready to help you out—just ask!",
-            icon="/public/Gemini_Generated_Image_8jri0n8jri0n8jri (1).svg",
+            icon="/public/cp_accountant.png",
         ),
     ]
 
@@ -1802,16 +1795,8 @@ async def on_chat_start():
     thread_id = cl.context.session.thread_id
     logger.info(f"💬 on_chat_start called for user: {user}")
 
-    # ─── Persist thread row ─────────────────────────────────────
-    dl: SQLAlchemyDataLayer = get_data_layer()
-    engine = dl.engine
-    meta = MetaData()
-    threads_table = Table("threads", meta, Column("id", PG_UUID(as_uuid=True), primary_key=True))
-    thread_uuid = uuid.UUID(thread_id)
-    async with engine.begin() as conn:
-        await conn.execute(
-            pg_insert(threads_table).values(id=thread_uuid).on_conflict_do_nothing()
-        )
+    # ─── Skip database operations for mock environment ─────────────────────────────────────
+    logger.info("Skipping database operations in mock environment")
 
     # ─── Setup memory ───────────────────────────────────────────
     redis_session_id = f"{user.identifier}:{thread_id}"
@@ -1924,8 +1909,8 @@ async def on_message(message: cl.Message):
 
     # Check if user wants to start a new question/topic (return to BU selection)
     new_question_keywords = [
-        "ถามใหม่", "เลือก BU", "เลือก BU ใหม่", "คำถามใหม่", "เปลี่ยนหัวข้อ", "เปลี่ยนหัวข้อใหม่", "เริ่มใหม่", 
-        "เลือกหัวข้อใหม่", "หัวข้อใหม่", "เริ่มต้นใหม่","เริ่มใหม่", "เปลี่ยนหมวด", "หมวดใหม่",
+        "ถามใหม่", "คำถามใหม่", "เปลี่ยนหัวข้อ", "เปลี่ยนหัวข้อใหม่", "เริ่มใหม่", 
+        "เลือกหัวข้อใหม่", "หัวข้อใหม่", "เริ่มต้นใหม่", "เปลี่ยนหมวด", "หมวดใหม่",
         "new question", "new topic", "change topic", "start over", "restart"
     ]
     

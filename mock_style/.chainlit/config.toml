@@ -3,7 +3,7 @@
 enable_telemetry = true
 
 [theme]
-custom_css = "/public/custom.css"
+custom_css_path = "theme.css"
 # List of environment variables to be provided by each user to use the app.
 user_env = []
 
@@ -16,6 +16,7 @@ user_session_timeout = 1296000  # 15 days
 
 # Enable third parties caching (e.g LangChain cache)
 cache = false
+
 
 # Authorized origins
 allow_origins = ["*"]
@@ -57,8 +58,9 @@ edit_message = true
 # Name of the assistant.
 name = "Compliance Policy"
 
-# Logo of the assistant.
-custom_logo = "cp_axtra_logo.svg"
+# Logo configuration  
+logo_dark = "/public/CP_Axtra_Logo_2.png"
+logo_light = "/public/CP_Axtra_Logo_2.png"
 
 # default_theme = "dark"
 
@@ -69,6 +71,9 @@ custom_logo = "cp_axtra_logo.svg"
 
 # Chain of Thought (CoT) display mode. Can be "hidden", "tool_call" or "full".
 cot = "full"
+
+# Show sidebar with chat history
+show_readme_as_default = false
 
 # Link to your github repo. This will add a github button in the UI's header.
 # github = ""

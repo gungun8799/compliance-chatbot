@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chainlit UI Style Development - Exact Production Replica</title>
+    
+    <!-- Production CSS files for exact replication -->
+    <link rel="stylesheet" href="custom.css">
+    <link rel="stylesheet" href="production-theme.css">
+    
+    <!-- Your development CSS file - edit this for styling -->
+    <link rel="stylesheet" href="theme.css">
+    
+    <!-- Chainlit base styles with CSS variables from theme.json -->
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans Thai", Roboto, "Helvetica Neue", Arial, sans-serif;
+            height: 100vh;
+            display: flex;
+            background: hsl(var(--background));
+            color: hsl(var(--foreground));
+        }
+        
+        /* Chainlit CSS Variables from theme.json */
+        :root {
+            --font-sans: 'Inter', sans-serif;
+            --font-mono: source-code-pro, Menlo, Monaco, Consolas, 'Courier New', monospace;
+            --background: 0 0% 100%;
+            --foreground: 0 0% 5%;
+            --card: 0 0% 100%;
+            --card-foreground: 0 0% 5%;
+            --popover: 0 0% 100%;
+            --popover-foreground: 0 0% 5%;
+            --primary: 44, 97%, 50%;
+            --primary-foreground: 0 0% 100%;
+            --secondary: 210 40% 96.1%;
+            --secondary-foreground: 222.2 47.4% 11.2%;
+            --muted: 0 0% 90%;
+            --muted-foreground: 0 0% 36%;
+            --accent: 0 0% 95%;
+            --accent-foreground: 222.2 47.4% 11.2%;
+            --destructive: 0 84.2% 60.2%;
+            --destructive-foreground: 210 40% 98%;
+            --border: 0 0% 90%;
+            --input: 0 0% 90%;
+            --ring: 44, 97%, 50%;
+            --radius: 0.75rem;
+            --sidebar-background: 0 0% 98%;
+            --sidebar-foreground: 240 5.3% 26.1%;
+            --sidebar-primary: 240 5.9% 10%;
+            --sidebar-primary-foreground: 0 0% 98%;
+            --sidebar-accent: 240 4.8% 95.9%;
+            --sidebar-accent-foreground: 240 5.9% 10%;
+            --sidebar-border: 220 13% 91%;
+            --sidebar-ring: 217.2 91.2% 59.8%;
+        }
+        
+        /* Apply CSS variables to base elements */
+        .app {
+            background: hsl(var(--background));
+            color: hsl(var(--foreground));
+        }
+    </style>
+</head>
+<body>
+    <!-- Main App Container -->
+    <div class="app" id="root">
+        
+        <!-- Sidebar (typical Chainlit sidebar) -->
+        <aside class="sidebar" data-testid="sidebar">
+            <div class="sidebar-header">
+                <h2 class="sidebar-title">Compliance Policy</h2>
+            </div>
+            <nav class="nav">
+                <div class="nav-item sidebar-item">
+                    <span>New Chat</span>
+                </div>
+                <div class="nav-item sidebar-item">
+                    <span>Chat History</span>
+                </div>
+                <div class="nav-item sidebar-item">
+                    <span>Settings</span>
+                </div>
+            </nav>
+        </aside>
+        
+        <!-- Main Content Area -->
+        <main class="main-container" data-testid="main-container">
+            
+            <!-- Header -->
+            <div class="p-3 flex h-[60px] items-center justify-between gap-2 relative" id="header">
+                <div class="flex items-center"></div>
+                <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
+                    <img src="public/cp_axtra_logo.svg" alt="CP Axtra Logo" class="h-8 w-auto">
+                </div>
+                <div></div>
+                <div class="flex items-center gap-1">
+                    <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2" id="readme-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="radix-:ro:" data-state="closed">
+                        <span>Readme</span>
+                    </button>
+                    <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 hover:bg-accent h-9 w-9 text-muted-foreground hover:text-muted-foreground" id="theme-toggle" type="button" aria-haspopup="menu" aria-expanded="false" data-state="closed">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-sun !size-5 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0">
+                            <circle cx="12" cy="12" r="4"></circle>
+                            <path d="M12 2v2"></path>
+                            <path d="M12 20v2"></path>
+                            <path d="m4.93 4.93 1.41 1.41"></path>
+                            <path d="m17.66 17.66 1.41 1.41"></path>
+                            <path d="M2 12h2"></path>
+                            <path d="M20 12h2"></path>
+                            <path d="m6.34 17.66-1.41 1.41"></path>
+                            <path d="m19.07 4.93-1.41 1.41"></path>
+                        </svg>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-moon absolute !size-5 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100">
+                            <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
+                        </svg>
+                        <span class="sr-only">Toggle theme</span>
+                    </button>
+                    <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 hover:bg-accent hover:text-accent-foreground px-4 py-2 relative h-8 w-8 rounded-full" id="user-nav-button" type="button" aria-haspopup="menu" aria-expanded="false" data-state="closed">
+                        <span class="relative flex shrink-0 overflow-hidden rounded-full h-8 w-8">
+                            <span class="flex h-full w-full items-center justify-center rounded-full bg-primary text-primary-foreground font-semibold">A</span>
+                        </span>
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Chat Container -->
+            <div class="chat-container">
+                
+                <!-- Messages List -->
+                <div class="messages-container">
+                    
+                    <!-- Assistant Message -->
+                    <div class="message assistant bot-message" role="article">
+                        <div class="message-content">
+                            <p>สวัสดีครับ ผม Compliance Policy Assistant ยินดีต้อนรับสู่ระบบตอบคำถามเกี่ยวกับนโยบัย</p>
+                            <p>คุณสามารถถามคำถามเกี่ยวกับ:</p>
+                            <ul>
+                                <li>อำนาจอนุมัติ DoA / LoA</li>
+                                <li>คู่ค้า (Commercial / Trade Supplier)</li>
+                                <li>คู่ค้า (Procurement / Non-Trade Supplier)</li>
+                            </ul>
+                        </div>
+                    </div>
+                    
+                    <!-- User Message -->
+                    <div class="message user user-message" role="article">
+                        <div class="message-content">
+                            <p>อำนาจอนุมัติ DoA คืออะไร?</p>
+                        </div>
+                    </div>
+                    
+                    <!-- Assistant Response -->
+                    <div class="message assistant bot-message" role="article">
+                        <div class="message-content">
+                            <p>DoA (Delegation of Authority) คือ การมอบอำนาจอนุมัติ ซึ่งเป็นการกำหนดระดับอำนาจในการอนุมัติรายการต่างๆ</p>
+                            <p>โดยมีการแบ่งระดับอำนาจตามตำแหน่งและวงเงิน เพื่อให้การดำเนินงานเป็นไปอย่างมีประสิทธิภาพและโปร่งใส</p>
+                        </div>
+                    </div>
+                    
+                </div>
+                
+                <!-- Input Area -->
+                <div class="chat-input-container input-container message-input-container">
+                    <div class="input-wrapper">
+                        <textarea 
+                            class="input-field chat-input" 
+                            placeholder="Type your message here..."
+                            rows="1"
+                        ></textarea>
+                        <button class="btn button send-button">Send</button>
+                    </div>
+                </div>
+                
+            </div>
+            
+        </main>
+        
+    </div>
+    
+    <!-- Live Reload Script -->
+    <script>
+        // Auto-reload when any CSS file changes (for development)
+        let lastModified = {
+            'theme.css': '',
+            'custom.css': '',
+            'production-theme.css': ''
+        };
+        
+        async function checkForChanges() {
+            const files = ['theme.css', 'custom.css', 'production-theme.css'];
+            
+            for (const file of files) {
+                try {
+                    const response = await fetch(file, { method: 'HEAD' });
+                    const modified = response.headers.get('last-modified');
+                    
+                    if (lastModified[file] && lastModified[file] !== modified) {
+                        console.log(`${file} changed, reloading...`);
+                        location.reload();
+                        return;
+                    }
+                    lastModified[file] = modified;
+                } catch (e) {
+                    // Ignore errors
+                }
+            }
+        }
+        
+        // Check every 1 second
+        setInterval(checkForChanges, 1000);
+        
+        // Add some interactivity for testing
+        document.querySelector('.send-button').addEventListener('click', () => {
+            const input = document.querySelector('.chat-input');
+            if (input.value.trim()) {
+                alert('In production, this would send: ' + input.value);
+                input.value = '';
+            }
+        });
+    </script>
+</body>
+</html>

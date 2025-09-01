@@ -1,14 +1,33 @@
-# Welcome to Chainlit! 🚀🤖
+Banchee Chatbot (Chainlit) 🤖✨
 
-Hi there, Developer! 👋 We're excited to have you on board. Chainlit is a powerful tool designed to help you prototype, debug and share applications built on top of LLMs.
+สวัสดีครับ! ยินดีต้อนรับสู่ Banchee Chatbot ผู้ช่วยตอบคำถามด้านนโยบายและการเงินขององค์กร ใช้งานง่าย: เลือก หัวข้อ (BU) ก่อน แล้วถามคำถามต่อได้เลยทั้งไทย/อังกฤษ 😊
 
-## Useful Links 🔗
+---
 
-- **Documentation:** Get started with our comprehensive [Chainlit Documentation](https://docs.chainlit.io) 📚
-- **Discord Community:** Join our friendly [Chainlit Discord](https://discord.gg/k73SQ3FyUh) to ask questions, share your projects, and connect with other developers! 💬
+วิธีใช้งานแบบสั้นๆ 🧭
 
-We can't wait to see what you create with Chainlit! Happy coding! 💻😊
+1) เลือก BU ด้วยตัวเลข
+กรุณาเลือกหัวข้อคำถามโดยพิมพ์ตัวเลขเพื่อเลือกหัวข้อ:
 
-## Welcome screen
+1. อำนาจอนุมัติ DoA / LoA การอนุมัติโครงการ และค่าใช้จ่าย  
+2. คู่ค้าซื้อมาขายไป (Commercial / Trade Supplier)  
+3. คู่ค้าอื่นๆ (Procurement / Non-Trade Supplier)  
+4. ลูกค้าผู้เช่าพื้นที่ (Mall / Tenant)  
+5. ลูกค้า B2B  
+6. ลูกหนี้อื่นๆ (AR Others / AR non-mall)  
+7. สินทรัพย์ (Asset)
 
-To modify the welcome screen, edit the `chainlit.md` file at the root of your project. If you do not want a welcome screen, just leave this file empty.
+ตัวอย่าง: พิมพ์ `3` เพื่อเลือก “คู่ค้าอื่นๆ (Procurement / Non-Trade Supplier)”
+
+2) พิมพ์คำถามได้เลย 💬
+หลังจากเลือก BU แล้ว ให้ถามได้ตามธรรมชาติ (ไทย/อังกฤษได้หมด) บอตจะจำบริบทภายใน BU นั้นๆ ให้โดยอัตโนมัติ
+
+3) เริ่มใหม่หรือเปลี่ยน BU ได้ทุกเมื่อ 🔁
+พิมพ์คีย์เวิร์ดด้านล่างนี้เพื่อเริ่มบทสนทนาใหม่หรือกลับไปเลือก BU อีกครั้ง:
+
+- ภาษาไทย: `ถามใหม่`, `เลือก BU`, `เลือก BU ใหม่`, `คำถามใหม่`, `เปลี่ยนหัวข้อ`, `เปลี่ยนหัวข้อใหม่`, `เริ่มใหม่`, `เลือกหัวข้อใหม่`, `หัวข้อใหม่`, `เริ่มต้นใหม่`, `เปลี่ยนหมวด`, `หมวดใหม่`
+- English: `new question`, `new topic`, `change topic`, `start over`, `restart`
+
+---
+
+ขอให้สนุกกับการใช้งาน Banchee Chatbot และได้คำตอบไวๆ นะครับ 🚀😊

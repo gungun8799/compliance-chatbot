@@ -22,3 +22,53 @@
     -webkit-filter: none !important;
   }
 }
+
+/* Add company logo to header top-left */
+#header > div:first-child::before {
+  content: "";
+  display: block;
+  width: 120px;
+  height: 40px;
+  background-image: url("cp_axtra_logo.svg");
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+
+/* Universal bot avatar override - try all possible selectors */
+img[alt="avatar"],
+.avatar img,
+[data-cy="avatar"] img,
+.step img,
+.message img,
+[class*="avatar"] img,
+[class*="Avatar"] img {
+  content: url("Gemini_Generated_Image_8jri0n8jri0n8jri (1).svg") !important;
+}
+
+/* Specific overrides for animated messages */
+.cl-message img,
+.cl-step img,
+div[data-cy*="step"] img,
+div[data-cy*="message"] img {
+  content: url("Gemini_Generated_Image_8jri0n8jri0n8jri (1).svg") !important;
+}
+
+/* Override login page logo specifically - target the exact element */
+img[src*="/logo?theme=dark"],
+img[src*="/logo?theme=light"],
+img[alt="logo"],
+.logo {
+  content: url("cp_axtra_logo.svg") !important;
+  width: 150px !important;
+  height: auto !important;
+}
+
+/* Backup selectors for login page logo */
+body > div > div > div:first-child > div:first-child > img,
+div[class*="login"] img,
+div[class*="auth"] img {
+  content: url("cp_axtra_logo.svg") !important;
+  width: 150px !important;
+  height: auto !important;
+}
