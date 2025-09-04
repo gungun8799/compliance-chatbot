@@ -158,8 +158,9 @@ services:
       QDRANT_API_KEY: ${QDRANT_API_KEY}
       QDRANT_COLLECTION_NAME: ${QDRANT_COLLECTION_NAME}
       EMBEDDING_SERVICE: ${EMBEDDING_SERVICE}
-    ports:
-      - 8010:8010     # Changed from 8000:8000
+    # No external port - nginx will handle it
+    expose:
+      - 8010
     networks:
       - ai
     depends_on:
@@ -167,6 +168,24 @@ services:
       - redis
       - qdrant
       - postgres
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  nginx:
+    image: nginx:alpine
+    container_name: nginx-compliance
+    restart: unless-stopped
+    ports:
+      - 8010:80
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - ai
+    depends_on:
+      - chainlit_app
     logging:
       driver: "json-file"
       options:

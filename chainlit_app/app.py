@@ -1,4 +1,4 @@
-# Run application locally using this command: chainlit run app.py -h --root-path /chatbot/v1
+# Run application locally using this command: chainlit run app.py -h --root-path /compliance/chat
 import asyncio
 import json
 import logging
@@ -128,9 +128,13 @@ BU_DOCUMENT_MAP = {
         "อำนาจอนุมัติ DoA และ LoA.docx",
         "เงินลงทุนในโครงการ.docx",
         "อำนาจอนุมัติรายจ่ายทั่วไป.docx",
+        "FA-G-12 Entertainment Policy_TH_15012025_for chatbot.docx",
+        "FA-G-10 เงินทดรองจ่ายพนักงาน (Chat bot).docx",
+        "FA-G-01 Petty Cash (Chat bot).docx",
         "การเบิกค่าใช้จ่ายพนักงาน.docx",
         "FAQ_Narrative_1 DoA LOA_Proj App_Payment App.docx",
         "FAQ_Narrative - Org Structure and General Question.docx",
+        "FA-G-11 การเบิกจ่ายโดยไม่มีใบสั่งซื้อ (Chat bot).docx",
         "management chatbot.docx"
     ],
     "คู่ค้าซื้อมาขายไป (Commercial / Trade Supplier)": [
@@ -149,6 +153,7 @@ BU_DOCUMENT_MAP = {
     "ลูกค้าผู้เช่าพื้นที่ (Mall / Tenant)": [
         "การเพิ่ม คัดเลือกลูกค้า การต่อสัญญา และการติดตามหนี้.docx",
         "FAQ_Narrative_4 Mall.docx",
+        "FA-G-20_Write-off Tenant deposit_TH_15022025_for chatbot.docx",
         "FAQ_Narrative - Org Structure and General Question.docx",
         "management chatbot.docx"
         
@@ -162,6 +167,7 @@ BU_DOCUMENT_MAP = {
     "ลูกหนี้อื่นๆ (AR Others / AR non-mall)": [
         "การเพิ่มและแก้ไขข้อมูลคู่ค้า (Non-trade).docx",
         "FAQ_Narrative - Org Structure and General Question.docx",
+        "FA-G-14_Central Debtor Code for Invoice Issuance (TH)_01022025_for chatbot.docx",
         "management chatbot.docx"
     ],
     "สินทรัพย์ (Asset)": [
@@ -1765,7 +1771,60 @@ def auth_callback(username: str, password: str):
                 "provider": "credentials"
             }
         )
+        
+    if (username, password) == ("User_31", "123456"):
+        logger.info("✅ Login success for User_30")
+        return cl.User(
+            identifier="User_30",
+            metadata={
+                "role": "USER",
+                "email": "user_30@example.com",
+                "provider": "credentials"
+            }
+        )
+    if (username, password) == ("User_32", "123456"):
+        logger.info("✅ Login success for User_30")
+        return cl.User(
+            identifier="User_30",
+            metadata={
+                "role": "USER",
+                "email": "user_30@example.com",
+                "provider": "credentials"
+            }
+        )
+        
+    if (username, password) == ("User_33", "123456"):
+        logger.info("✅ Login success for User_30")
+        return cl.User(
+            identifier="User_30",
+            metadata={
+                "role": "USER",
+                "email": "user_30@example.com",
+                "provider": "credentials"
+            }
+        )
+        
+    if (username, password) == ("User_34", "123456"):
+        logger.info("✅ Login success for User_30")
+        return cl.User(
+            identifier="User_30",
+            metadata={
+                "role": "USER",
+                "email": "user_30@example.com",
+                "provider": "credentials"
+            }
+        )
 
+    if (username, password) == ("User_35", "123456"):
+        logger.info("✅ Login success for User_30")
+        return cl.User(
+            identifier="User_30",
+            metadata={
+                "role": "USER",
+                "email": "user_30@example.com",
+                "provider": "credentials"
+            }
+        )
 
 
     logger.warning(f"❌ Login failed for {username}")
