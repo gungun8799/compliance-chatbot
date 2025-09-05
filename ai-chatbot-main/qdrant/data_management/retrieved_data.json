@@ -1,0 +1,34 @@
+[
+  {
+    "doc_id": "faq_th_30",
+    "metadata": {
+      "source": "FAQ Dataset",
+      "row_index": 30,
+      "language": "Thai",
+      "online_offline": "O2O Shop Online"
+    },
+    "text": {
+      "Question Example": "ติดตามสถานะคำสั่งซื้อ",
+      "Answer Example": "สำหรับสมาชิก My Lotus สามารถตรวจสอบสถานะการจัดส่งได้ผ่านแอพพลิเคชั่นโดยคลิกที่  โปรไฟล์ > ประวัติคำสั่งซื้อ\nหากไม่ได้เป็นสมาชิก ติดต่อส่วนงานบริการลูกค้าได้ตามช่องทางดังนี้\n\n1.Inbox FB Lotus's Shop online\n2.E-mail shoponline@lotuss.com\n3.โทรศัพท์ที่หมายเลข 1430 กด 2\n4. https://corporate.lotuss.com/contact-us/",
+      "Question Type": "Order"
+    },
+    "document_id": "faq_th_30",
+    "language": "Thai"
+  },
+  {
+    "doc_id": "faq_th_31",
+    "metadata": {
+      "source": "FAQ Dataset",
+      "row_index": 31,
+      "language": "Thai",
+      "online_offline": "O2O Shop Online"
+    },
+    "text": {
+      "Question Example": "สอบถามเกี่ยวกับวิธีการชำระเงิน",
+      "Answer Example": "สามารถเลือกวิธีการชำระเงินสำหรับการช้อปออนไลน์ได้ดังนี้\n\n1.ชำระด้วยบัตรเครดิต / True Money We Card ในขั้นตอนการสั่งซื้อ เป็นเพียงการจองวงเงินในบัตรเครดิตเท่านั้น มิได้มีการดำเนินการตัดเงินในบัตรโดยทันทีแต่อย่างใด โดยระบบจะทำการรับชำระ/ตัดยอดจริง จากบัตรเครดิต ณ วันที่รับสินค้า\n2.ชำระด้วยบัตรเดบิต ในขั้นตอนการสั่งซื้อ ระบบจะทำการตัดเงินทันทีตามยอดที่สั่งซื้อในวันที่สั่งซื้อ\n3. ชำระด้วย True Money Online ในขั้นตอนการสั่งซื้อ ระบบจะทำการตัดเงินตามยอดที่สั่งซื้อในวันที่สั่งซื้อ\n4.ชำระเงินปลายทาง สามารถเลือกชำระโดยเงินสด หรือ ทรูมันนี่ วอลเล็ท",
+      "Question Type": "Payment"
+    },
+    "document_id": "faq_th_31",
+    "language": "Thai"
+  }
+]

@@ -53,7 +53,13 @@ from functions.qdrant_vectordb import QdrantManager
 from patches import patch
 from prompts import SYSTEM_PROMPT_DEEPTHINK, SYSTEM_PROMPT_STANDARD
 
+# OneLogin OAuth Authentication
+from auth.onelogin_oauth_provider import OneLoginOAuthProvider
+from auth.inject_custom_auth import add_custom_oauth_provider
+
 patch.apply_patch()
+
+# OneLogin OAuth provider will be initialized after logger is set up
 
 # ======================================================================================
 # Configuration and Initialization
@@ -74,6 +80,17 @@ logger = logging.getLogger(__name__)
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
+
+# Initialize OneLogin OAuth provider (with graceful fallback)
+try:
+    add_custom_oauth_provider("onelogin", OneLoginOAuthProvider())
+    logger.info("✅ OneLogin OAuth provider initialized successfully")
+except ValueError as e:
+    logger.warning(f"⚠️ OneLogin OAuth not configured: {e}")
+    logger.warning("⚠️ Application will run without OAuth authentication")
+except Exception as e:
+    logger.error(f"❌ Error initializing OneLogin OAuth provider: {e}")
+    logger.warning("⚠️ Application will run without OAuth authentication")
 
 # Environment Variables
 GROQ_MODEL_ID_1 = os.getenv("GROQ_MODEL_ID_1")
@@ -1427,9 +1444,30 @@ async def answer_from_node(node_or_nodes, user_q: str):
 # Chainlit Event Handlers
 # ======================================================================================
 
-@cl.password_auth_callback
-def auth_callback(username: str, password: str):
-    """Handles user authentication."""
+# OAuth callback function for OneLogin authentication (only if OAuth is configured)
+@cl.oauth_callback
+def oauth_callback(
+    provider_id: str,
+    token: str,
+    raw_user_data: Dict[str, str],
+    default_user: cl.User,
+) -> Optional[cl.User]:
+    """Handle OAuth authentication callback from OneLogin."""
+    if provider_id == "onelogin":
+        logger.info(f"✅ OneLogin OAuth login successful for user: {default_user.display_name}")
+        logger.info(f"User groups: {default_user.metadata.get('groups', [])}")
+    else:
+        logger.info(f"✅ OAuth login successful for provider: {provider_id}, user: {default_user.display_name}")
+    
+    # Return the user object created by the OAuth provider
+    return default_user
+
+
+# Fallback password auth (enabled when OAuth is not configured)
+# Uncomment the decorator below if OAuth is not working and you need password fallback
+# @cl.password_auth_callback  
+def fallback_password_auth(username: str, password: str):
+    """Old password auth - DEPRECATED"""
     if (username, password) == ("admin", "admin"):
         logger.info("✅ Login success for admin")
         return cl.User(
@@ -1828,6 +1866,7 @@ def auth_callback(username: str, password: str):
 
 
     logger.warning(f"❌ Login failed for {username}")
+    return None  # End of old auth function
     
 
 

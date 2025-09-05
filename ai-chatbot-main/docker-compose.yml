@@ -1,21 +1,26 @@
-# DEV: docker compose --env-file .env.dev -p compliance-chatbot up --build -d
-# PROD: docker compose --env-file .env.prod -p compliance-chatbot up --build -d
+# Build "ai" network first: docker network create --driver bridge ai
+# For deploy in dev env: docker compose --env-file .env.dev -p customer_chatbot up --build -d
+# For deploy in prod env: docker compose --env-file .env.prod -p customer_chatbot up --build -d
+# Build Specific Service: docker compose --env-file .env.prod -p customer_chatbot up --build -d postgres prisma localstack ai-chatbot
 
 services:
-
   phoenix:
     image: arizephoenix/phoenix:version-5.11.0
-    container_name: phoenix_compliance
+    container_name: phoenix
     restart: unless-stopped
     ports:
-      - 3100:3000      # Changed from 3000:3000
-      - 4318:4317      # Changed from 4317:4317
+      - 3000:3000  # PHOENIX_PORT
+      - 4317:4317  # PHOENIX_GRPC_PORT
     environment:
       PHOENIX_WORKING_DIR: /mnt/data
       PHOENIX_PORT: 3000
-      COLLECTOR_ENDPOINT: ${TRACE_ENDPOINT:-http://phoenix_compliance:3000/v1/traces}
-      # PHOENIX_HOST_ROOT_PATH: ${PHOENIX_HOST_ROOT_PATH}
+      COLLECTOR_ENDPOINT: ${TRACE_ENDPOINT:-http://phoenix:3000/v1/traces}
       INSTRUMENT_LLAMA_INDEX: true
+      PHOENIX_ENABLE_AUTH: ${PHOENIX_ENABLE_AUTH:-false}
+      PHOENIX_SECRET: ${PHOENIX_SECRET}
+      PHOENIX_USE_SECURE_COOKIES: ${PHOENIX_USE_SECURE_COOKIES}
+      # PHOENIX_HOST_ROOT_PATH: ${PHOENIX_HOST_ROOT_PATH}
+      #PROD_CORS_ORIGIN: http://localhost:8501
     volumes:
       - ${PHOENIX_DATAPATH}
     networks:
@@ -26,27 +31,13 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  feedback_api:
-    build:
-      context: ./feedback_api
-      dockerfile: Dockerfile
-    container_name: feedback_api_compliance
-    image: feedback_api:v1
-    restart: unless-stopped
-    ports:
-      - "4006:4001"     # Changed from 4001:4001
-    networks:
-      - ai
-    depends_on:
-      - chainlit_app
-
   redis:
     image: redis/redis-stack:7.4.0-v1
-    container_name: redis_compliance
+    container_name: redis
     restart: unless-stopped
     ports:
-      - 6381:6379      # Changed from 6379:6379
-      - 8002:8001      # Changed from 8001:8001
+      - 6379:6379
+      - 8001:8001
     environment:
       REDIS_ARGS: --requirepass ${REDIS_CHATSTORE_PASSWORD:-default_password}
     networks:
@@ -61,13 +52,14 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.12.4
-    container_name: qdrant_compliance
+    container_name: qdrant
     restart: unless-stopped
     ports:
-      - 6433:6333      # Changed from 6333:6333
-      - 6434:6334      # Changed from 6334:6334
+      - 6333:6333  # REST API
+      - 6334:6334  # gRPC API
     environment:
       QDRANT__SERVICE__API_KEY: $QDRANT_API_KEY
+      QDRANT__SERVICE__READ_ONLY_API_KEY: $QDRANT_READ_ONLY_API_KEY
     volumes:
       - ${QDRANT_DATAPATH}
     networks:
@@ -80,17 +72,17 @@ services:
 
   postgres:
     image: postgres:16
-    container_name: postgresql_compliance
+    container_name: postgresql
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-postgres}
       POSTGRES_USER: ${POSTGRES_USERNAME:-root}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-root}
+      PGDATA: /var/lib/postgresql/data/pgdata
     ports:
-      - "5434:5432"     # Changed from 5433:5432
+      - "5432:5432"
     volumes:
       - ${POSTGRES_DATAPATH}
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - ai
     logging:
@@ -101,11 +93,11 @@ services:
 
   prisma:
     image: node:18
-    container_name: prisma_compliance
+    container_name: prisma
     working_dir: /app
     entrypoint: ["sh", "-c", "/app/prisma/start-prisma.sh"]
     volumes:
-      - ./prisma:/app/prisma
+      - ./prisma:/app/prisma  # Mount Prisma directory
     environment:
       - DATABASE_URL=${DATABASE_URL}
     networks:
@@ -113,47 +105,45 @@ services:
     depends_on:
       - postgres
     ports:
-      - 5655:5555     # Changed from 5555:5555
+      - 5555:5555 # Port for Prisma Studio
 
   localstack:
     image: localstack/localstack:latest
-    container_name: localstack_compliance
+    container_name: localstack
     restart: unless-stopped
     environment:
       SERVICES: s3
     ports:
-      - 4576:4566      # Changed from 4566:4566
+      - 4566:4566
     volumes:
       - ./localstack/localstack-script.sh:/etc/localstack/init/ready.d/script.sh
       - "/var/run/docker.sock:/var/run/docker.sock"
       - ${LOCALSTACK_DATAPATH}
 
-  chainlit_app:
+  ai-chatbot:
     build: ./chainlit_app/
-    env_file: .env
-    image: compliance-app:v1.0
-    container_name: compliance-app
+    image: chainlit_app:v7.0
+    container_name: ai-chatbot-v1.2
     restart: unless-stopped
     environment:
-      ENV_MODE: ${ENV_MODE}
       CHAINLIT_AUTH_SECRET: ${CHAINLIT_AUTH_SECRET}
+      # CHAINLIT_ROOT_PATH: /chatbot/v1
       GRPC_VERBOSITY: ${GRPC_VERBOSITY}
-      # OneLogin OAuth Configuration
+      CHAINLIT_URL: ${CHAINLIT_URL}
+      PHOENIX_API_KEY: ${PHOENIX_API_KEY}
+      OAUTH_ONELOGIN_DOMAIN: ${OAUTH_ONELOGIN_DOMAIN}
       OAUTH_ONELOGIN_CLIENT_ID: ${OAUTH_ONELOGIN_CLIENT_ID}
       OAUTH_ONELOGIN_CLIENT_SECRET: ${OAUTH_ONELOGIN_CLIENT_SECRET}
-      OAUTH_ONELOGIN_DOMAIN: ${OAUTH_ONELOGIN_DOMAIN}
       OAUTH_ONELOGIN_REDIRECT_URI: ${OAUTH_ONELOGIN_REDIRECT_URI}
-      GROQ_API_KEY: ${GROQ_API_KEY}
-      GROQ_MODEL_ID_1: ${GROQ_MODEL_ID_1}
-      GROQ_MODEL_ID_2: ${GROQ_MODEL_ID_2}
-      COHERE_API_KEY: ${COHERE_API_KEY}
-      COHERE_MODEL_ID: ${COHERE_MODEL_ID}
+      # OAUTH_PROMPT: ${OAUTH_PROMPT}
       LLM_BASE_URL: ${LLM_BASE_URL}
       LLM_MODEL_ID: ${LLM_MODEL_ID}
       EMBED_BASE_URL: ${EMBED_BASE_URL}
       EMBED_MODEL_ID: ${EMBED_MODEL_ID}
       API_KEY_CHATBOT: ${API_KEY_CHATBOT}
-      ASYNC_DATABASE_URL: ${ASYNC_DATABASE_URL}
+      API_KEY_AUTOMATION: ${API_KEY_AUTOMATION}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      GROQ_MODEL_ID: ${GROQ_MODEL_ID}
       REDIS_CHATSTORE_URI: ${REDIS_CHATSTORE_URI}
       REDIS_CHATSTORE_PASSWORD: ${REDIS_CHATSTORE_PASSWORD}
       TRACE_ENDPOINT: ${TRACE_ENDPOINT}
@@ -161,11 +151,9 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       QDRANT_URL: ${QDRANT_URL}
       QDRANT_API_KEY: ${QDRANT_API_KEY}
-      QDRANT_COLLECTION_NAME: ${QDRANT_COLLECTION_NAME}
-      EMBEDDING_SERVICE: ${EMBEDDING_SERVICE}
-    # No external port - nginx will handle it
-    expose:
-      - 8010
+      COLLECTION_NAME: ${COLLECTION_NAME}
+    ports:
+      - ${CHATBOT_PORT}:8501
     networks:
       - ai
     depends_on:
@@ -179,36 +167,33 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  nginx:
-    image: nginx:alpine
-    container_name: nginx-compliance
-    restart: unless-stopped
-    ports:
-      - 8010:80
-    volumes:
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
-    networks:
-      - ai
-    depends_on:
-      - chainlit_app
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+  # nginx:
+  #   image: nginx:latest
+  #   container_name: nginx_proxy
+  #   ports:
+  #     - "80:80"
+  #   volumes:
+  #     - ./nginx.conf:/etc/nginx/nginx.conf
+  #   depends_on:
+  #     - ai-chatbot
+  #   networks:
+  #     - ai
 
 volumes:
-  phoenix_data_compliance:
+  phoenix_data:
     driver: local
-  qdrant_storage_compliance:
+  qdrant_storage:
     driver: local
-  postgres_data_compliance:
+  postgres_data:
     driver: local
-  redis_data_compliance:
+  redis_data:
     driver: local
-  localstack_compliance:
+  localstack:
     driver: local
+
 
 networks:
   ai:
+    # name: ai  
+    # driver: bridge
     external: true

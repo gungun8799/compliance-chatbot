@@ -1,0 +1,34 @@
+[
+  {
+    "doc_id": "faq_th_0",
+    "metadata": {
+      "source": "FAQ Dataset",
+      "row_index": 0,
+      "language": "Thai",
+      "online_offline": "Offline"
+    },
+    "text": {
+      "Question Example": "สามารถชำระบิลด้วยบัตรเครดิตได้หรือไม่",
+      "Answer Example": "รับชำระด้วยเงินสดเท่านั้น",
+      "Question Type": "Gift Card"
+    },
+    "document_id": "faq_th_0",
+    "language": "Thai"
+  },
+  {
+    "doc_id": "faq_en_0",
+    "metadata": {
+      "source": "FAQ Dataset",
+      "row_index": 0,
+      "language": "English",
+      "online_offline": "Offline"
+    },
+    "text": {
+      "Question Example": "Can I pay the bill with a credit card?",
+      "Answer Example": "Only cash payment is accepted.",
+      "Question Type": "Gift Card"
+    },
+    "document_id": "faq_en_0",
+    "language": "English"
+  }
+]

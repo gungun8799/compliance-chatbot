@@ -23,7 +23,8 @@
       "WebFetch(domain:github.com)",
       "Bash(cp:*)",
       "Bash(chainlit run:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(chmod:*)"
     ],
     "deny": [],
     "ask": []
