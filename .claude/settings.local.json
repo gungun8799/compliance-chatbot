@@ -24,9 +24,14 @@
       "Bash(cp:*)",
       "Bash(chainlit run:*)",
       "Bash(ls:*)",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "Bash(openssl req:*)",
+      "Bash(find:*)"
     ],
     "deny": [],
-    "ask": []
+    "ask": [],
+    "additionalDirectories": [
+      "/Users/harveygunjarueg"
+    ]
   }
 }

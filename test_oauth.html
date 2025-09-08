@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test OneLogin OAuth</title>
+</head>
+<body>
+    <h1>Test OneLogin OAuth Flow</h1>
+    <p>This page directly links to the OAuth endpoint to test if the correct domain is being used.</p>
+    
+    <h2>Direct OAuth Link:</h2>
+    <a href="https://localhost:8010/compliance/chat/auth/oauth/onelogin" 
+       style="display: inline-block; padding: 10px 20px; background: #007bff; color: white; text-decoration: none; border-radius: 5px;">
+        Click Here to Test OneLogin OAuth
+    </a>
+    
+    <hr>
+    
+    <h2>Expected Behavior:</h2>
+    <ul>
+        <li>Should redirect to: <code>https://ourlogin.lotuss.com/oidc/2/auth</code></li>
+        <li>NOT to: <code>https://ourlogintest.lotuss.com/oidc/2/auth</code></li>
+    </ul>
+    
+    <hr>
+    
+    <h2>Debug Info:</h2>
+    <button onclick="checkOAuthEndpoint()">Check OAuth Endpoint</button>
+    <div id="result"></div>
+    
+    <script>
+    async function checkOAuthEndpoint() {
+        try {
+            const response = await fetch('https://localhost:8010/compliance/chat/auth/config');
+            const data = await response.json();
+            document.getElementById('result').innerHTML = '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+        } catch (error) {
+            document.getElementById('result').innerHTML = 'Error: ' + error.message;
+        }
+    }
+    </script>
+</body>
+</html>

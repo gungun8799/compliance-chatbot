@@ -184,9 +184,10 @@ services:
     container_name: nginx-compliance
     restart: unless-stopped
     ports:
-      - 8010:80
+      - 8010:443
     volumes:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
     networks:
       - ai
     depends_on:
