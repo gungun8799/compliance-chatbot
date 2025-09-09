@@ -130,7 +130,7 @@ services:
 
   chainlit_app:
     build: ./chainlit_app/
-    env_file: .env
+    # env_file: .env
     image: compliance-app:v1.0
     container_name: compliance-app
     restart: unless-stopped
