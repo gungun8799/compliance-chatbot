@@ -1464,7 +1464,7 @@ def oauth_callback(
 
 
 # Fallback password auth (enabled when OAuth is not configured)
-# COMMENTED OUT WHEN ONELOGIN IS ENABLED
+# Uncomment the decorator below if OAuth is not working and you need password fallback
 # @cl.password_auth_callback  
 def fallback_password_auth(username: str, password: str):
     """Old password auth - DEPRECATED"""
