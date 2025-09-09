@@ -55,12 +55,12 @@ class OneLoginOAuthProvider(OAuthProvider):
             "Content-Type": "application/x-www-form-urlencoded",
             "Authorization": f"Basic {basic_auth}",
         }
-        # print(f"URL from Request: {redirect_uri}")
-        # Prepare payload with data-urlencode style
+        # Use the same redirect_uri from env config to ensure consistency
+        # between authorization and token requests
         payload = {
             "grant_type": "authorization_code",
             "code": code,
-            "redirect_uri": redirect_uri,
+            "redirect_uri": self.redirect_uri,
         }
 
         async with httpx.AsyncClient() as client:
