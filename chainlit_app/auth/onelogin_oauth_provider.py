@@ -55,17 +55,27 @@ class OneLoginOAuthProvider(OAuthProvider):
             "Content-Type": "application/x-www-form-urlencoded",
             "Authorization": f"Basic {basic_auth}",
         }
-        # print(f"URL from Request: {redirect_uri}")
-        # Prepare payload with data-urlencode style
+        
+        # Debug logging
+        print(f"🔍 Token Exchange Debug:")
+        print(f"  Code: {code}")
+        print(f"  Redirect URI from request: {redirect_uri}")
+        print(f"  Expected redirect URI: {self.redirect_uri}")
+        print(f"  Client ID: {self.client_id}")
+        print(f"  Token URL: {self.token_url}")
+        
+        # Use the configured redirect URI instead of the one from request
+        # This ensures consistency with the authorization request
         payload = {
             "grant_type": "authorization_code",
             "code": code,
-            "redirect_uri": redirect_uri,
+            "redirect_uri": self.redirect_uri,  # Use configured URI
         }
 
         async with httpx.AsyncClient() as client:
             try:
-                # print("Request Payload:", payload)
+                print(f"🔄 Sending token request to: {self.token_url}")
+                print(f"🔄 Request Payload: {payload}")
                 response = await client.post(self.token_url, headers=headers, data=payload)
                 response.raise_for_status()
                 json_content = response.json()
